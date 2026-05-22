@@ -40,7 +40,7 @@ class Resultado:
     composicion: Optional[str]
     presentacion: Optional[str]
     confianza: float
-    metodo: str  # 'cruce_base' | 'descarte_item' | 'historico' | 'regla_diccionario' | 'claude'
+    metodo: str  # cruce_base|descarte_item|historico|regla_diccionario|conflicto_regla_modelo|modelo_descarte|claude
     razon: str
     pactivo_propuesto: Optional[str] = None  # pactivo nuevo, fuera de la lista
     costo_usd: float = 0.0
@@ -126,6 +126,31 @@ def clasificar_fila(
     if not pactivo:
         pactivo = reglas.match_diccionario(texto, pactivos_norm)
     if pactivo:
+        # VETO del modelo entrenado sobre el match SIMPLE de diccionario.
+        # match_diccionario hace un match de texto contra un catálogo que
+        # incluye pactivos NO médicos ("Servicio de Aseo", "Cocina",
+        # "Electrodo") — es la señal de interés más débil de la cascada. Si el
+        # clasificador de descarte (entrenado con ~1M de decisiones humanas)
+        # está MUY seguro de que la fila es descarte, la regla matcheó ruido y
+        # gana el modelo. NO se aplica al match COMBINADO (señal fuerte: todos
+        # los componentes de un pactivo real del catálogo presentes en la
+        # glosa). El resultado lleva método propio para poder auditar el choque.
+        if not por_combinacion:
+            p_desc = descarte_modelo.prob_descarte(modelo_descarte, descripcion)
+            if p_desc >= config.umbral_modelo_descarte:
+                return Resultado(
+                    interes=0,
+                    pactivo=None,
+                    composicion=None,
+                    presentacion=None,
+                    confianza=round(p_desc, 3),
+                    metodo="conflicto_regla_modelo",
+                    razon=(
+                        f"La regla matcheó '{pactivo}', pero el clasificador "
+                        f"de descarte entrenado lo descarta "
+                        f"(probabilidad {p_desc:.2f})."
+                    ),
+                )
         comp_g, pres_g = taxonomia.extraer_de_glosa(texto)
         comp_h, pres_h = preclasificador.comp_pres_por_pactivo(tabla, pactivo)
         comp = comp_g or comp_h

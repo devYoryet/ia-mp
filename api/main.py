@@ -378,6 +378,7 @@ _METODOS = {
     "cruce_base": "cruce Base",
     "descarte_item": "descarte por rubro",
     "modelo_descarte": "clasif. de descarte",
+    "conflicto_regla_modelo": "regla vs. modelo",
     "historico": "histórico",
     "regla_diccionario": "reglas",
     "claude": "Claude",
