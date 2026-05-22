@@ -1,0 +1,22 @@
+# Worker del Clasificador IA (systemd).
+# Instalar en gestor_oc:
+#   sudo cp deploy/clasificador-worker.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now clasificador-worker
+# Ver logs:  journalctl -u clasificador-worker -f
+
+[Unit]
+Description=Clasificador IA - worker de clasificacion
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=clasificador
+WorkingDirectory=/opt/clasificador_ia
+ExecStart=/opt/clasificador_ia/.venv/bin/python worker.py
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

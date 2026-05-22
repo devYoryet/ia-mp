@@ -1,0 +1,9 @@
+# El .env NO entra a la imagen — se inyecta en runtime con env_file (docker-compose).
+.env
+__pycache__/
+*.pyc
+*.log
+.venv/
+venv/
+.git/
+.gitignore

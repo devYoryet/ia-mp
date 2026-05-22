@@ -1,0 +1,22 @@
+# Panel web del Clasificador IA (systemd).
+# Instalar en gestor_oc:
+#   sudo cp deploy/clasificador-api.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now clasificador-api
+# Ver logs:  journalctl -u clasificador-api -f
+
+[Unit]
+Description=Clasificador IA - panel web de revision
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=clasificador
+WorkingDirectory=/opt/clasificador_ia
+ExecStart=/opt/clasificador_ia/.venv/bin/uvicorn api.main:app --host 127.0.0.1 --port 8800
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,12 @@
+# Instalar con: pip install -r requirements.txt
+# Usar la última versión del SDK de Anthropic (necesita messages.parse / salida estructurada).
+anthropic>=0.69.0
+pymysql>=1.1.0
+python-dotenv>=1.0.0
+fastapi>=0.115.0
+uvicorn>=0.30.0
+pydantic>=2.6.0
+python-multipart>=0.0.9
+# Clasificador de descarte (entrenado con el histórico etiquetado).
+scikit-learn>=1.5.0
+joblib>=1.4.0

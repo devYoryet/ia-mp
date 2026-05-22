@@ -1,0 +1,40 @@
+# SOLO para revisar el FRONTEND localmente, con la infra real caída.
+# Levanta un MySQL de demo (con datos de ejemplo) + el panel.
+# Producción usa docker-compose.yml (que se conecta al MySQL del clásico).
+#
+#   docker compose -f compose-demo.yml up -d --build
+#   abrir http://localhost:8800
+#   docker compose -f compose-demo.yml down -v   (para apagar y borrar)
+
+services:
+  db:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: demo
+      MYSQL_DATABASE: licitaciones_diarias_total_farma
+    volumes:
+      - ./schema/auditoria.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+      - ./demo/seed.sql:/docker-entrypoint-initdb.d/02_seed.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-pdemo"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  panel:
+    build: .
+    image: clasificador-ia:latest
+    command: uvicorn api.main:app --host 0.0.0.0 --port 8800
+    environment:
+      MYSQL_HOST: db
+      MYSQL_PORT: "3306"
+      MYSQL_USER: root
+      MYSQL_PASSWORD: demo
+      MYSQL_DB: licitaciones_diarias_total_farma
+      MYSQL_DB_DICCIONARIO: licitaciones_diarias_total_farma
+      ANTHROPIC_API_KEY: demo
+    ports:
+      - "8800:8800"
+    depends_on:
+      db:
+        condition: service_healthy

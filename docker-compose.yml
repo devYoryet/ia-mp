@@ -1,0 +1,28 @@
+# Clasificador IA — dos contenedores desde la misma imagen.
+#   worker → backend: clasifica en loop (según MODO de .env)
+#   panel  → frontend: web de revisión en http://localhost:8800
+#
+# Local:            docker compose up --build
+# En gestor_oc:     docker compose up -d --build
+#
+# La base de datos NO va en contenedor: es el MySQL del servidor clásico
+# (10.0.0.69), al que ambos servicios se conectan según .env.
+
+services:
+  worker:
+    build: .
+    image: clasificador-ia:latest
+    command: python worker.py
+    env_file: .env
+    restart: unless-stopped
+
+  panel:
+    build: .
+    image: clasificador-ia:latest
+    command: uvicorn api.main:app --host 0.0.0.0 --port 8800
+    env_file: .env
+    ports:
+      - "8800:8800"
+    depends_on:
+      - worker
+    restart: unless-stopped
