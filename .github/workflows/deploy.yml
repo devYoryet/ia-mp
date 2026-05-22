@@ -1,0 +1,29 @@
+name: deploy a gestor_oc
+
+# Al hacer push a main, se conecta por SSH a gestor_oc, actualiza el repo y
+# reconstruye los contenedores. Requiere estos secrets en el repo (Settings →
+# Secrets and variables → Actions):
+#   GESTOR_OC_HOST  · GESTOR_OC_PORT · GESTOR_OC_USER · GESTOR_OC_SSH_KEY
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  desplegar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: SSH a gestor_oc y desplegar
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.GESTOR_OC_HOST }}
+          port: ${{ secrets.GESTOR_OC_PORT }}
+          username: ${{ secrets.GESTOR_OC_USER }}
+          key: ${{ secrets.GESTOR_OC_SSH_KEY }}
+          script: |
+            set -e
+            cd /opt/ia-mp
+            git fetch origin main
+            git reset --hard origin/main
+            docker compose up -d --build
+            docker compose ps

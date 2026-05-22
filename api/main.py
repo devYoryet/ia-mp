@@ -29,6 +29,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 from config import config  # noqa: E402
 from db import conectar  # noqa: E402
+from descarte_modelo import cargar_modelo_descarte, prob_descarte  # noqa: E402
 from reglas import normalizar  # noqa: E402
 
 app = FastAPI(title="Clasificador IA — Pharmatender")
@@ -81,6 +82,9 @@ tr + tr td { border-top: 1px solid #eef1f4; }
 .b-desc { background: #f8d7da; color: #9a2530; }
 .b-nuevo { background: #fde2c0; color: #9a6212; }
 .b-hist { background: #d6e4f5; color: #1a4a7a; }
+.b-met { background: #e6e9ef; color: #3a4252; }
+.b-ent-d { background: #f3d6d6; color: #7a2530; border: 1px dashed #c98; }
+.b-ent-i { background: #d6ecd9; color: #1b5e2a; border: 1px dashed #9b9; }
 button { padding: 9px 18px; border: 0; border-radius: 6px; font-size: 14px;
          font-weight: 600; cursor: pointer; background: #1b6b3a; color: #fff; }
 button.sec { background: #16263d; }
@@ -129,6 +133,24 @@ def _query(sql: str, args=()) -> list:
 
 def _e(v) -> str:
     return html.escape("" if v is None else str(v))
+
+
+# Modelo de descarte entrenado — se carga una vez para mostrar, por fila, la
+# etiqueta de "entrenamiento": qué dice el clasificador entrenado (interés o
+# descarte), independiente de qué etapa de la cascada resolvió la fila.
+_MODELO_DESCARTE = None
+_MODELO_CARGADO = False
+
+
+def _modelo_descarte():
+    global _MODELO_DESCARTE, _MODELO_CARGADO
+    if not _MODELO_CARGADO:
+        try:
+            _MODELO_DESCARTE = cargar_modelo_descarte()
+        except Exception:  # noqa: BLE001
+            _MODELO_DESCARTE = None
+        _MODELO_CARGADO = True
+    return _MODELO_DESCARTE
 
 
 # ----------------------------------------------------------------- Catálogo ---
@@ -230,6 +252,14 @@ def resumen() -> str:
         costo = _query(
             "SELECT IFNULL(SUM(costo_usd),0) c FROM clasificador_ia_costos"
         )[0]["c"]
+        # Pendientes DE PROCESAR: filas nuevas sin clasificar (estado_gestor NULL
+        # y sin clasificador) — lo que el worker tiene por delante.
+        pend_proc = {}
+        for _t in TABLAS_VALIDAS:
+            pend_proc[_t] = _query(
+                f"SELECT COUNT(*) n FROM `{_t}` WHERE estado_gestor IS NULL "
+                f"AND (nombre_clasificador IS NULL OR nombre_clasificador='')"
+            )[0]["n"]
     except Exception as exc:  # noqa: BLE001
         return _layout(
             "Error",
@@ -239,7 +269,14 @@ def resumen() -> str:
     rev = log["rev"] or 0
     prec = f"{(log['ok'] or 0) / rev * 100:.1f}%" if rev else "—"
     cuerpo = (
-        "<h1>Resumen</h1><div class=cards>"
+        "<h1>Resumen</h1>"
+        "<h2>Pendientes de procesar (filas nuevas sin clasificar)</h2><div class=cards>"
+        f"<div class=card><div class=n>{pend_proc['compra_agil']:,}</div>"
+        f"<div class=l>Pendientes compra ágil</div></div>"
+        f"<div class=card><div class=n>{pend_proc['Licitaciones_diarias']:,}</div>"
+        f"<div class=l>Pendientes licitaciones</div></div>"
+        "</div>"
+        "<h2>Clasificación IA</h2><div class=cards>"
         f"<div class=card><div class=n>{log['n']}</div><div class=l>Clasificadas por IA</div></div>"
         f"<div class=card><div class=n>{log['pend'] or 0}</div><div class=l>Pendientes de revisión</div></div>"
         f"<div class=card><div class=n>{rev}</div><div class=l>Revisadas</div></div>"
@@ -329,9 +366,21 @@ def comparacion() -> str:
 # pactivo/composición/presentación). `nuevo` es un subconjunto de interés —
 # las que Claude propone con un pactivo fuera del catálogo.
 _TIPOS = {
-    "interes": "interes_sugerido=1",
+    # interés = de interés Y con pactivo del catálogo. Los de pactivo NUEVO
+    # tienen su propia categoría aparte (no se mezclan en "interés").
+    "interes": "interes_sugerido=1 AND (pactivo_nuevo IS NULL OR pactivo_nuevo='')",
     "descarte": "interes_sugerido=0",
     "nuevo": "pactivo_nuevo IS NOT NULL AND pactivo_nuevo<>''",
+}
+
+# Etiquetas legibles de cada etapa de la cascada que resolvió la fila.
+_METODOS = {
+    "cruce_base": "cruce Base",
+    "descarte_item": "descarte por rubro",
+    "modelo_descarte": "clasif. de descarte",
+    "historico": "histórico",
+    "regla_diccionario": "reglas",
+    "claude": "Claude",
 }
 
 
@@ -346,8 +395,9 @@ def revision(hoja: int = 1, msg: str = "", tabla: str = "", tipo: str = "",
         args.append(tabla)
     if tipo in _TIPOS:
         cond.append(_TIPOS[tipo])
-    if metodo == "historico":
-        cond.append("metodo='historico'")
+    if metodo in _METODOS:
+        cond.append("metodo=%s")
+        args.append(metodo)
     where = " AND ".join(cond)
     try:
         total = _query(
@@ -399,9 +449,9 @@ def revision(hoja: int = 1, msg: str = "", tabla: str = "", tipo: str = "",
         + filtro_link("tipo", "interes", "interés", tipo == "interes")
         + filtro_link("tipo", "descarte", "descarte", tipo == "descarte")
         + filtro_link("tipo", "nuevo", "pactivo nuevo", tipo == "nuevo")
-        + " &nbsp; <b>Match:</b>"
-        + filtro_link("metodo", "", "todos", not metodo)
-        + filtro_link("metodo", "historico", "histórico 100%", metodo == "historico")
+        + " &nbsp; <b>Vía:</b>"
+        + filtro_link("metodo", "", "todas", not metodo)
+        + "".join(filtro_link("metodo", k, v, metodo == k) for k, v in _METODOS.items())
         + "</div>"
     )
 
@@ -425,9 +475,20 @@ def revision(hoja: int = 1, msg: str = "", tabla: str = "", tipo: str = "",
             tipo_cls, badge = "t-nuevo", "<span class='badge b-nuevo'>PACTIVO NUEVO</span>"
         else:
             tipo_cls, badge = "", "<span class='badge b-int'>INTERÉS sugerido</span>"
-        # histórico 100%: descripción idéntica ya clasificada — match exacto.
-        hist = (" · <span class='badge b-hist'>histórico 100%</span>"
-                if f.get("metodo") == "historico" else "")
+        # vía: qué etapa de la cascada resolvió esta fila.
+        _met = f.get("metodo")
+        via = f" · <span class='badge b-met'>vía {_e(_METODOS.get(_met, _met or '?'))}</span>"
+
+        # etiqueta de ENTRENAMIENTO: qué dice el clasificador de descarte
+        # entrenado sobre esta fila, independiente de la etapa que la resolvió.
+        _m = _modelo_descarte()
+        ent = ""
+        if _m is not None:
+            pd = prob_descarte(_m, f.get("descripcion"))
+            if pd >= 0.5:
+                ent = f" · <span class='badge b-ent-d'>entrenamiento: DESCARTE {pd:.2f}</span>"
+            else:
+                ent = f" · <span class='badge b-ent-i'>entrenamiento: INTERÉS {1 - pd:.2f}</span>"
 
         info = cat.get(normalizar(f.get("pactivo_sugerido") or ""))
         comps = info["comp"] if info else []
@@ -449,7 +510,7 @@ def revision(hoja: int = 1, msg: str = "", tabla: str = "", tipo: str = "",
             f"<b>Licitación {_e(num_lic.get((f['tabla_origen'], f['fila_id'])) or '—')}</b>"
             f" · {_e(f['tabla_origen'])} #{f['fila_id']} · "
             f"<span class='badge {'b-baja' if conf < 0.7 else 'b-alta'}'>confianza {conf:.2f}</span>"
-            f"{hist}</div>"
+            f"{via}{ent}</div>"
             f"<div class=desc>{_e((f.get('descripcion') or '')[:300])}</div>"
             f"<div class=razon>Claude: {_e(f.get('razon'))}</div>"
             + aviso_nuevo
