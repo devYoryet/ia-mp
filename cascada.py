@@ -26,6 +26,7 @@ from typing import Optional
 import clasificador_claude as cc
 import cruce_base
 import descarte_modelo
+import modelo_pactivo as mp
 import preclasificador
 import reglas
 from config import config
@@ -40,7 +41,7 @@ class Resultado:
     composicion: Optional[str]
     presentacion: Optional[str]
     confianza: float
-    metodo: str  # cruce_base|descarte_item|historico|regla_diccionario|conflicto_regla_modelo|modelo_descarte|claude
+    metodo: str  # cruce_base|descarte_item|historico|regla_diccionario|conflicto_regla_modelo|modelo_descarte|modelo_pactivo|claude
     razon: str
     pactivo_propuesto: Optional[str] = None  # pactivo nuevo, fuera de la lista
     costo_usd: float = 0.0
@@ -60,6 +61,8 @@ def clasificar_fila(
     combinaciones: "Optional[list]" = None,
     modelo_descarte=None,
     ejemplos: str = "",
+    indice_inverso: "Optional[dict]" = None,
+    modelo_pactivo=None,
 ) -> Resultado:
     descripcion = fila.get("Descripcion")
     titulo = fila.get("Titulo")
@@ -152,9 +155,15 @@ def clasificar_fila(
                     ),
                 )
         comp_g, pres_g = taxonomia.extraer_de_glosa(texto)
+        # De TODAS las (comp,pres) que existen para este pactivo en el histórico
+        # humano, la que mejor encaja con esta descripción. Convierte comp/pres
+        # de texto libre a opción dentro de la lista finita REAL del fármaco.
+        comp_o, pres_o = preclasificador.elegir_comp_pres_por_descripcion(
+            tabla, pactivo, descripcion
+        )
         comp_h, pres_h = preclasificador.comp_pres_por_pactivo(tabla, pactivo)
-        comp = comp_g or comp_h
-        pres = pres_g or pres_h
+        comp = comp_g or comp_o or comp_h
+        pres = pres_g or pres_o or pres_h
         detalle = "combinado" if por_combinacion else "diccionario"
         return Resultado(
             interes=1,
@@ -183,12 +192,56 @@ def clasificar_fila(
             razon=f"Clasificador de descarte entrenado (probabilidad {p_desc:.2f}).",
         )
 
+    # Modelo de pactivo APRENDIDO — antes de Claude, una red más barata. El
+    # clasificador multiclase entrenado con ~1.6K pactivos y las glosas
+    # históricas de las 4 fuentes captura los casos donde la glosa cambia de
+    # forma pero comparte componentes léxicos (lo que hoy iba a Claude).
+    # Si está MUY seguro, asigna pactivo + (comp,pres) desde el histórico real
+    # del pactivo; si no llega al umbral, la fila sigue a Claude.
+    pact_pred, conf = mp.predecir(modelo_pactivo, descripcion)
+    if pact_pred and conf >= config.umbral_modelo_pactivo:
+        comp_g, pres_g = taxonomia.extraer_de_glosa(texto)
+        comp_o, pres_o = preclasificador.elegir_comp_pres_por_descripcion(
+            tabla, pact_pred, descripcion
+        )
+        comp_h, pres_h = preclasificador.comp_pres_por_pactivo(tabla, pact_pred)
+        return Resultado(
+            interes=1,
+            pactivo=pact_pred,
+            composicion=comp_g or comp_o or comp_h,
+            presentacion=pres_g or pres_o or pres_h,
+            confianza=round(conf, 3),
+            metodo="modelo_pactivo",
+            razon=f"Clasificador de pactivo entrenado (probabilidad {conf:.2f}).",
+        )
+
     # Claude — texto libre. Su salida se ajusta con snap al valor del catálogo.
+    # Top-K pactivos cuyas palabras aparecen en la descripción → PISTA para
+    # Claude (no acota el catálogo, solo lo guía). Si el índice no se cargó o
+    # config.top_k_pactivos=0, va sin pista (comportamiento original).
+    candidatos = (
+        reglas.candidatos_top_k(descripcion, indice_inverso, k=config.top_k_pactivos)
+        if indice_inverso and config.top_k_pactivos > 0 else []
+    )
     c, uso = cc.clasificar(
-        descripcion or "", titulo or "", vinculos or "", taxonomia, ejemplos
+        descripcion or "", titulo or "", vinculos or "", taxonomia, ejemplos,
+        candidatos=candidatos,
     )
     comp, pres = c.composicion, c.presentacion
     if c.interes == 1:
+        # Una vez que Claude propone un pactivo, sus comp/pres dejan de ser
+        # texto libre: existen, para ese fármaco, opciones REALES en el
+        # histórico humano. Preferimos la opción que más encaja con la
+        # descripción (medido: comp 31% / pres 15% con generación libre, vs
+        # ~85% / ~95% del histórico). Si ninguna opción matchea el texto o el
+        # pactivo es NUEVO (sin histórico), se cae al texto de Claude + snap.
+        comp_o, pres_o = preclasificador.elegir_comp_pres_por_descripcion(
+            tabla, c.pactivo, descripcion
+        )
+        if comp_o:
+            comp = comp_o
+        if pres_o:
+            pres = pres_o
         comp, pres = taxonomia.snap(c.pactivo, comp, pres)
     return Resultado(
         interes=c.interes,

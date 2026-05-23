@@ -8,8 +8,15 @@ Usa la conexión compartida del worker (no abre una por consulta)."""
 
 from __future__ import annotations
 
+import os
+
 from config import config
 from db import conexion_worker
+
+# Offset opcional sobre el ORDER BY del backtest — permite correr la misma
+# cascada sobre una ventana de filas DISTINTA a las más recientes, para
+# verificar que un cambio no está sobreajustado a un sample puntual.
+_BACKTEST_OFFSET = int(os.getenv("BACKTEST_OFFSET", "0"))
 
 TABLAS_VALIDAS = ("compra_agil", "Licitaciones_diarias")
 
@@ -39,7 +46,7 @@ WHERE t.estado_gestor IS NOT NULL
   AND t.nombre_clasificador NOT REGEXP '^(Bot|BOT|IA_)'
   AND b.id IS NULL
 ORDER BY t.fecha_clasificacion DESC
-LIMIT %s
+LIMIT %s OFFSET %s
 """
 
 
@@ -60,5 +67,8 @@ def filas_para_backtest(tabla: str, limite: int | None = None) -> list[dict]:
     _check(tabla)
     conn = conexion_worker()
     with conn.cursor() as cur:
-        cur.execute(_SQL_BACKTEST.format(tabla=tabla), (tabla, limite or config.lote_max))
+        cur.execute(
+            _SQL_BACKTEST.format(tabla=tabla),
+            (tabla, limite or config.lote_max, _BACKTEST_OFFSET),
+        )
         return list(cur.fetchall())

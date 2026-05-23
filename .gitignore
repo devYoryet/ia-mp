@@ -4,3 +4,6 @@ __pycache__/
 *.log
 .venv/
 venv/
+# Modelo grande de pactivo (~1.7 GB) — se sube manualmente vía SFTP a gestor_oc.
+# El de descarte (~6 MB) sí va al repo.
+modelo_pactivo.joblib

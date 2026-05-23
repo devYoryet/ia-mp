@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from collections import Counter, defaultdict
 
 
 def normalizar(texto: str | None) -> str:
@@ -75,6 +76,41 @@ def indexar_combinaciones(pactivos: list[str]) -> list[tuple]:
         if all(len(tok) >= 5 for tok in tokens):
             combos.append((p, tokens))
     return combos
+
+
+def indexar_inverso_pactivos(pactivos: list[str]) -> dict[str, set]:
+    """Índice inverso {token: {pactivos_que_lo_contienen}} para ranking rápido.
+
+    Token = palabra normalizada del nombre del pactivo (>=5 chars para evitar
+    falsos positivos con preposiciones y números). Se construye UNA vez al
+    arrancar el worker. Con esto, sacar los top-K candidatos de una descripción
+    es O(palabras_de_la_descripción) en vez de scorear los 3.000+ pactivos."""
+    idx: dict[str, set] = defaultdict(set)
+    for p in pactivos:
+        for tok in re.split(r"[\s\-]+", normalizar(p)):
+            if len(tok) >= 5:
+                idx[tok].add(p)
+    return idx
+
+
+def candidatos_top_k(
+    descripcion: str | None, indice_inverso: dict[str, set], k: int = 20
+) -> list[str]:
+    """Pactivos del catálogo cuyas palabras aparecen en la descripción,
+    ordenados por número de coincidencias (desc). Hasta `k`. Pista para
+    Claude — NO acota el catálogo (sigue completo en el system prompt). Si
+    ninguno calza, devuelve [] y Claude clasifica como siempre."""
+    desc = normalizar(descripcion or "")
+    if not desc:
+        return []
+    tokens_desc = {w for w in re.split(r"\W+", desc) if len(w) >= 5}
+    if not tokens_desc:
+        return []
+    contador: Counter = Counter()
+    for tok in tokens_desc:
+        for p in indice_inverso.get(tok, ()):
+            contador[p] += 1
+    return [p for p, _ in contador.most_common(k)]
 
 
 def match_combinacion(texto: str, combinaciones: list) -> str | None:

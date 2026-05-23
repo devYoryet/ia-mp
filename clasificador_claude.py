@@ -120,9 +120,13 @@ def clasificar(
     vinculos: str,
     taxonomia: Taxonomia,
     ejemplos: str = "",
+    candidatos: "list[str] | None" = None,
 ) -> "tuple[Clasificacion, Uso]":
     """Clasifica una fila con Claude. La lista controlada (y los ejemplos
     validados, si hay) se cachean entre llamadas con prompt caching.
+    `candidatos` (opcional) son los pactivos del catálogo cuyas palabras
+    aparecen en la descripción — se pasan como PISTA en el mensaje de usuario,
+    NO acotan el catálogo (sigue completo en el system prompt cacheado).
     Devuelve la clasificación y el costo/tokens de la llamada."""
     sistema = [
         {"type": "text", "text": SISTEMA_BASE},
@@ -132,6 +136,18 @@ def clasificar(
         sistema.append({"type": "text", "text": ejemplos})
     # el último bloque del prefijo estable lleva el breakpoint de caché
     sistema[-1]["cache_control"] = {"type": "ephemeral"}
+
+    # Pista: pactivos del catálogo cuyas palabras aparecen en la descripción.
+    # Va en el mensaje (no cacheable: cambia por fila). Claude SIGUE pudiendo
+    # elegir cualquier pactivo del catálogo completo — esto es solo ayuda.
+    pista = ""
+    if candidatos:
+        pista = (
+            "Pistas: estos pactivos del catálogo contienen palabras de la "
+            "descripción — considéralos PRIMERO. Si ninguno encaja con lo que "
+            "describe el texto, elige cualquier otro del catálogo completo.\n"
+            + "\n".join(f"- {c}" for c in candidatos) + "\n\n"
+        )
     peticion = dict(
         model=config.modelo,
         max_tokens=2500,
@@ -139,7 +155,7 @@ def clasificar(
         messages=[
             {
                 "role": "user",
-                "content": f"Título: {titulo or '(sin título)'}\n"
+                "content": pista + f"Título: {titulo or '(sin título)'}\n"
                 f"Descripción: {descripcion or '(sin descripción)'}\n"
                 f"VINCULOS: {(vinculos or '(sin vínculos)')[:800]}",
             }

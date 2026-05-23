@@ -48,6 +48,15 @@ class Config:
     # (modelo_descarte.joblib) para auto-descartar sin llamar a Claude. Por debajo
     # del umbral, la fila sigue a Claude. Conservador a propósito.
     umbral_modelo_descarte: float = float(os.getenv("UMBRAL_MODELO_DESCARTE", "0.97"))
+    # Clasificador multiclase de pactivo: probabilidad mínima del modelo
+    # entrenado para auto-asignar un pactivo sin pasar por Claude. Sanity con
+    # 30 ejemplos/pactivo: umbral 0.7 → cubre 84% del residuo con 99% de
+    # acierto. Conservador a propósito; por debajo del umbral, va a Claude.
+    umbral_modelo_pactivo: float = float(os.getenv("UMBRAL_MODELO_PACTIVO", "0.70"))
+    # Top-K pactivos del catálogo, ordenados por palabras de la descripción, que
+    # se pasan a Claude como PISTA en el mensaje de usuario. No acota el
+    # catálogo (sigue completo en el system prompt). 0 = desactivado.
+    top_k_pactivos: int = int(os.getenv("TOP_K_PACTIVOS", "20"))
     auto_aplicar_descartes: bool = (
         os.getenv("AUTO_APLICAR_DESCARTES", "false").lower() == "true"
     )

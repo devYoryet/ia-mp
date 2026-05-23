@@ -10,13 +10,14 @@ Usa la conexión compartida del worker (no abre una por fila)."""
 from __future__ import annotations
 
 import logging
+import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from typing import Optional
 
 from config import config
 from db import conexion_worker
-from reglas import normalizar
+from reglas import normalizar, normalizar_valor
 
 log = logging.getLogger("preclasificador")
 
@@ -91,6 +92,12 @@ SIN_CLA = "Sin Cla"
 # que matchea un pactivo — que es lo único de la cascada que estresaba la BD.
 _COMP_PRES: dict[str, dict[str, tuple]] = {}
 
+# Cache paralelo con TODAS las opciones (no solo la dominante). Permite, dada una
+# descripción y un pactivo, elegir la (comp, pres) que efectivamente EXISTE para
+# ese fármaco y que mejor encaja con el texto — en vez de aceptar generación
+# libre. Estructura: {tabla: {pactivo_norm: [(comp, pres, n_veces), ...]}}.
+_COMP_PRES_OPCIONES: dict[str, dict[str, list[tuple]]] = {}
+
 # Una sola pasada por tabla: comp/pres de TODOS los pactivos de interés.
 _SQL_CP_TODOS = """
 SELECT pactivo, composicion, presentacion, COUNT(*) AS n
@@ -148,8 +155,66 @@ def precargar_comp_pres(tablas) -> None:
                     (f["composicion"], f["presentacion"], int(f["n"]))
                 )
         _COMP_PRES[tabla] = {p: _resolver(fs) for p, fs in por_pactivo.items()}
+        # Lista cruda de opciones por pactivo (orden estable: más frecuente primero).
+        _COMP_PRES_OPCIONES[tabla] = {
+            p: sorted(fs, key=lambda x: -x[2]) for p, fs in por_pactivo.items()
+        }
         log.info("comp/pres precalculado en memoria: %s -> %d pactivos",
                  tabla, len(_COMP_PRES[tabla]))
+
+
+def elegir_comp_pres_por_descripcion(
+    tabla: str, pactivo: Optional[str], descripcion: Optional[str]
+) -> tuple:
+    """Una vez fijado el pactivo, comp/pres ya NO son texto libre — son una de
+    las opciones reales que existen para ese fármaco en el histórico humano.
+    Esta función mira esa lista finita y devuelve la (comp, pres) que mejor
+    calza con la DESCRIPCIÓN actual.
+
+    Score por opción:
+      +2 si la composición normalizada (sin espacios) aparece en la descripción
+         normalizada (capta '500mg' aunque la glosa diga '500 MG' o '500 mg').
+      +1 si la presentación aparece como palabra (admite plural) en la glosa.
+    Entre las mejores, gana la más frecuente. Si ninguna marca coincidencia,
+    devuelve (None, None) y la cascada cae al respaldo de moda histórica.
+
+    Para Claude resuelve el problema medido: comp/pres se equivocan en >2/3 de
+    las filas porque genera texto libre que no existe para ese pactivo.
+    """
+    if not pactivo or not descripcion:
+        return (None, None)
+    cache = _COMP_PRES_OPCIONES.get(tabla)
+    if not cache:
+        return (None, None)
+    opciones = cache.get(normalizar(pactivo))
+    if not opciones:
+        return (None, None)
+
+    desc = normalizar(descripcion)
+    if not desc:
+        return (None, None)
+    desc_sin_esp = desc.replace(" ", "")
+
+    mejor: tuple | None = None
+    mejor_score = 0
+    for comp, pres, n in opciones:
+        score = 0
+        cn = normalizar_valor(comp or "")  # comp normalizado sin espacios
+        if cn and cn in desc_sin_esp:
+            score += 2
+        pn = normalizar(pres or "")
+        if pn and re.search(rf"\b{re.escape(pn)}s?\b", desc):
+            score += 1
+        if score == 0:
+            continue
+        # Mejor score gana; con el mismo score, la opción más frecuente.
+        if score > mejor_score or (score == mejor_score and (mejor is None or n > mejor[2])):
+            mejor = (comp, pres, n)
+            mejor_score = score
+
+    if mejor is None:
+        return (None, None)
+    return (mejor[0], mejor[1])
 
 
 def comp_pres_por_pactivo(tabla: str, pactivo: Optional[str]) -> tuple:

@@ -30,9 +30,10 @@ from cruce_base import cargar_cruce_base
 from db import reintentar
 from descarte_items import cargar_descartes
 from descarte_modelo import cargar_modelo_descarte
+from modelo_pactivo import cargar_modelo_pactivo
 from ejemplos import cargar_ejemplos
 from preclasificador import precargar_comp_pres
-from reglas import indexar_combinaciones, indexar_pactivos
+from reglas import indexar_combinaciones, indexar_inverso_pactivos, indexar_pactivos
 from reglas_negocio import cargar_feedback
 from taxonomia import cargar_taxonomia
 
@@ -59,9 +60,11 @@ def cargar_recursos() -> dict:
         "taxonomia": taxonomia,
         "pactivos_norm": indexar_pactivos(taxonomia.pactivos),
         "combinaciones": indexar_combinaciones(taxonomia.pactivos),
+        "indice_inverso": indexar_inverso_pactivos(taxonomia.pactivos),
         "descartes": reintentar(cargar_descartes),
         "cruce": reintentar(cargar_cruce_base),
         "modelo_descarte": cargar_modelo_descarte(),
+        "modelo_pactivo": cargar_modelo_pactivo(),
         "contexto": contexto,
     }
     log.info(
@@ -90,6 +93,8 @@ def ciclo(r: dict) -> int:
                     tabla, fila, r["taxonomia"], r["pactivos_norm"],
                     r["descartes"], r["cruce"], r["combinaciones"],
                     r["modelo_descarte"], r["contexto"],
+                    indice_inverso=r["indice_inverso"],
+                    modelo_pactivo=r["modelo_pactivo"],
                 )
                 if es_test:
                     reintentar(lambda: escritor.registrar_backtest(tabla, fila, resultado))
