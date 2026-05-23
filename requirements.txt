@@ -10,3 +10,9 @@ python-multipart>=0.0.9
 # Clasificador de descarte (entrenado con el histórico etiquetado).
 scikit-learn>=1.5.0
 joblib>=1.4.0
+# Scripts legacy portados de gestor_oc (bin/*.py): leen Excel/CSV y escriben a
+# Clásico/Prime con pandas+sqlalchemy. vault_linux_helper usa mysql-connector.
+pandas>=2.2.0
+sqlalchemy>=2.0.0
+openpyxl>=3.1.0
+mysql-connector-python>=9.0.0

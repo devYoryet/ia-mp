@@ -23,6 +23,16 @@ services:
     env_file: .env
     ports:
       - "8800:8800"
+    # Carpeta de trabajo de los módulos Legacy: la misma que usaba Laravel en
+    # gestor_oc (chunks, .log, reportes). En el host vive aquí desde siempre.
+    volumes:
+      - /var/www/html/gestor_oc/storage/app/temp:/host/storage/temp
+    environment:
+      LEGACY_TEMP_DIR: /host/storage/temp
+    # www-data del host (UID:GID 33:33) es el dueño-de-grupo del directorio
+    # /var/www/html/gestor_oc/storage/app/temp (modo 2775 con setgid). Correr
+    # el panel con ese UID le da permiso de escritura sin tocar el host.
+    user: "33:33"
     depends_on:
       - worker
     restart: unless-stopped

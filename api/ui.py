@@ -1,0 +1,115 @@
+"""Layout y CSS compartidos por las vistas HTML del panel.
+
+Se separa de main.py para que api/legacy.py reuse el mismo header/CSS sin
+imports circulares.
+"""
+
+from __future__ import annotations
+
+import html
+
+
+CSS = """
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; background: #eef1f4;
+       color: #1d2330; line-height: 1.5; }
+header { background: #16263d; color: #fff; padding: 14px 28px; display: flex;
+         align-items: center; justify-content: space-between; flex-wrap: wrap; }
+header b { font-size: 18px; }
+header nav a { color: #b9c6d6; text-decoration: none; margin-left: 20px; font-size: 14px; }
+header nav a:hover { color: #fff; }
+main { max-width: 1120px; margin: 24px auto; padding: 0 20px; }
+h1 { font-size: 20px; margin-bottom: 14px; }
+h2 { font-size: 15px; color: #6b7689; margin: 22px 0 10px; }
+.cards { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 22px; }
+.card { background: #fff; border-radius: 10px; padding: 16px 20px; flex: 1; min-width: 140px;
+        box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+.card .n { font-size: 26px; font-weight: 700; }
+.card .l { font-size: 12px; color: #6b7689; margin-top: 2px; }
+table { width: 100%; background: #fff; border-radius: 10px; overflow: hidden;
+        box-shadow: 0 1px 3px rgba(0,0,0,.08); border-collapse: collapse; }
+th, td { text-align: left; padding: 9px 13px; font-size: 14px; }
+th { background: #f3f6fa; color: #6b7689; }
+tr + tr td { border-top: 1px solid #eef1f4; }
+.fila { background: #fff; border-radius: 9px; padding: 13px 16px; margin-bottom: 10px;
+        box-shadow: 0 1px 3px rgba(0,0,0,.08); border-left: 4px solid #2f6fb0; }
+.fila.t-descarte { border-left-color: #c0392b; }
+.fila.t-nuevo { border-left-color: #d68910; background: #fffaf2; }
+.fila .meta { font-size: 12px; color: #6b7689; }
+.fila .desc { font-size: 14px; margin: 4px 0 4px; }
+.fila .razon { font-size: 12px; color: #6b7689; font-style: italic; margin-bottom: 8px; }
+.fila .nuevo-aviso { background: #fff3e0; border: 1px solid #f0d9a8; border-radius: 6px;
+        padding: 8px 11px; font-size: 13px; margin-bottom: 9px; }
+.linea { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.linea label { font-size: 12px; color: #6b7689; }
+.linea input, .linea select { padding: 6px 8px; border: 1px solid #cdd5e0; border-radius: 6px;
+        font-size: 13px; }
+.linea input.motivo { flex: 1; min-width: 200px; }
+.linea select.decision { font-weight: 600; }
+.badge { display: inline-block; padding: 2px 8px; border-radius: 20px; font-size: 12px;
+         font-weight: 600; }
+.b-alta { background: #d9f0e1; color: #1b6b3a; }
+.b-baja { background: #fbe4cf; color: #9a6212; }
+.b-int { background: #d9f0e1; color: #1b6b3a; }
+.b-desc { background: #f8d7da; color: #9a2530; }
+.b-nuevo { background: #fde2c0; color: #9a6212; }
+.b-hist { background: #d6e4f5; color: #1a4a7a; }
+.b-met { background: #e6e9ef; color: #3a4252; }
+.b-ent-d { background: #f3d6d6; color: #7a2530; border: 1px dashed #c98; }
+.b-ent-i { background: #d6ecd9; color: #1b5e2a; border: 1px dashed #9b9; }
+button { padding: 9px 18px; border: 0; border-radius: 6px; font-size: 14px;
+         font-weight: 600; cursor: pointer; background: #1b6b3a; color: #fff; }
+button.sec { background: #16263d; }
+button.peligro { background: #c0392b; }
+button:disabled { background: #6c757d; color: #e0e0e0; cursor: not-allowed; }
+.barra { display: flex; gap: 12px; align-items: center; margin: 16px 0; flex-wrap: wrap; }
+.barra input, .barra select { padding: 8px 10px; border: 1px solid #cdd5e0; border-radius: 6px; }
+.filtros { display: flex; gap: 10px; align-items: center; margin-bottom: 14px; flex-wrap: wrap;
+        font-size: 13px; }
+.filtros a { text-decoration: none; color: #2f6fb0; padding: 4px 10px; border-radius: 6px;
+        border: 1px solid #cdd5e0; background: #fff; }
+.filtros a.on { background: #16263d; color: #fff; border-color: #16263d; }
+.pag a { margin-right: 12px; text-decoration: none; color: #2f6fb0; font-size: 14px; }
+.aviso { background: #fff7e6; border: 1px solid #f0d9a8; padding: 10px 14px;
+         border-radius: 8px; margin-bottom: 14px; font-size: 14px; }
+.vacio { background: #fff; border-radius: 10px; padding: 40px; text-align: center;
+         color: #6b7689; }
+form.alta { background: #fff; border-radius: 10px; padding: 16px 20px; margin-bottom: 18px;
+            box-shadow: 0 1px 3px rgba(0,0,0,.08); display: flex; gap: 8px; flex-wrap: wrap; }
+form.alta input, form.alta select, form.alta textarea { padding: 8px 10px;
+        border: 1px solid #cdd5e0; border-radius: 6px; font-size: 13px; }
+form.alta textarea { flex: 1; min-width: 320px; }
+.consola { background: #1d2330; color: #f0f0f0; padding: 14px; border-radius: 8px;
+           height: 320px; overflow-y: auto; font-family: 'SF Mono', Menlo, Consolas, monospace;
+           font-size: 13px; white-space: pre-wrap; word-wrap: break-word; }
+.modulo-card { background: #fff; border-radius: 10px; padding: 18px 22px; text-decoration: none;
+               color: inherit; box-shadow: 0 1px 3px rgba(0,0,0,.08); display: block;
+               transition: transform .1s, box-shadow .1s; }
+.modulo-card:hover { transform: translateY(-2px); box-shadow: 0 4px 10px rgba(0,0,0,.10); }
+.modulo-card .titulo { font-size: 17px; font-weight: 700; margin-bottom: 6px; }
+.modulo-card .desc { font-size: 13px; color: #6b7689; }
+"""
+
+# Items del nav. Si se agrega una sección al panel, se suma acá.
+NAV = (
+    ("Resumen", "/"),
+    ("Backtest", "/comparacion"),
+    ("Cola de revisión", "/revision"),
+    ("Reglas", "/reglas"),
+    ("Legacy", "/legacy"),
+)
+
+
+def escape(v) -> str:
+    return html.escape("" if v is None else str(v))
+
+
+def layout(titulo: str, cuerpo: str) -> str:
+    nav = "".join(f"<a href='{h}'>{escape(t)}</a>" for t, h in NAV)
+    return (
+        "<!doctype html><html lang=es><head><meta charset=utf-8>"
+        "<meta name=viewport content='width=device-width,initial-scale=1'>"
+        f"<title>{escape(titulo)} · IA Bot</title><style>{CSS}</style></head><body>"
+        f"<header><b>IA Bot · Pharmatender</b><nav>{nav}</nav></header>"
+        f"<main>{cuerpo}</main></body></html>"
+    )
