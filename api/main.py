@@ -42,7 +42,8 @@ app = FastAPI(title="Clasificador IA — Pharmatender")
 app.include_router(legacy_router)
 
 TABLAS_VALIDAS = ("compra_agil", "Licitaciones_diarias")
-POR_HOJA = 20  # filas por hoja en la cola de revisión
+POR_HOJA_DEFAULT = 50  # filas por hoja en la cola de revisión (configurable)
+POR_HOJA_OPCIONES = (25, 50, 100, 200)
 
 def _query(sql: str, args=()) -> list:
     conn = conectar()
@@ -311,8 +312,9 @@ _METODOS = {
 
 @app.get("/revision", response_class=HTMLResponse)
 def revision(hoja: int = 1, msg: str = "", tabla: str = "", tipo: str = "",
-             metodo: str = "") -> str:
+             metodo: str = "", conf: str = "", por_hoja: int = 0) -> str:
     hoja = max(1, hoja)
+    por_hoja = por_hoja if por_hoja in POR_HOJA_OPCIONES else POR_HOJA_DEFAULT
     cond = ["revisado=0"]
     args: list = []
     if tabla in TABLAS_VALIDAS:
@@ -323,6 +325,14 @@ def revision(hoja: int = 1, msg: str = "", tabla: str = "", tipo: str = "",
     if metodo in _METODOS:
         cond.append("metodo=%s")
         args.append(metodo)
+    # Filtro por banda de confianza — para priorizar los casos dudosos (<0.7)
+    # o, al revés, repasar masivamente los seguros (>=0.85) con un solo OK.
+    if conf == "baja":
+        cond.append("confianza < 0.7")
+    elif conf == "media":
+        cond.append("confianza >= 0.7 AND confianza < 0.85")
+    elif conf == "alta":
+        cond.append("confianza >= 0.85")
     where = " AND ".join(cond)
     try:
         total = _query(
@@ -333,7 +343,7 @@ def revision(hoja: int = 1, msg: str = "", tabla: str = "", tipo: str = "",
             "pactivo_sugerido, composicion_sugerida, presentacion_sugerida, "
             f"confianza, razon, pactivo_nuevo, metodo FROM clasificador_ia_log WHERE {where} "
             "ORDER BY confianza ASC, creado_en DESC LIMIT %s OFFSET %s",
-            tuple(args) + (POR_HOJA, (hoja - 1) * POR_HOJA),
+            tuple(args) + (por_hoja, (hoja - 1) * por_hoja),
         )
     except Exception as exc:  # noqa: BLE001
         return _layout("Error", f"<div class=vacio>{_e(exc)}</div>")
@@ -357,7 +367,8 @@ def revision(hoja: int = 1, msg: str = "", tabla: str = "", tipo: str = "",
 
     # barra de filtros (mantiene el estado de los otros filtros en cada enlace)
     def filtro_link(clave: str, valor: str, etiqueta: str, activo: bool) -> str:
-        estado = {"tabla": tabla, "tipo": tipo, "metodo": metodo}
+        estado = {"tabla": tabla, "tipo": tipo, "metodo": metodo,
+                  "conf": conf, "por_hoja": str(por_hoja) if por_hoja != POR_HOJA_DEFAULT else ""}
         estado[clave] = valor
         qs = "&".join(f"{k}={v}" for k, v in estado.items() if v)
         cls = " class=on" if activo else ""
@@ -374,9 +385,19 @@ def revision(hoja: int = 1, msg: str = "", tabla: str = "", tipo: str = "",
         + filtro_link("tipo", "interes", "interés", tipo == "interes")
         + filtro_link("tipo", "descarte", "descarte", tipo == "descarte")
         + filtro_link("tipo", "nuevo", "pactivo nuevo", tipo == "nuevo")
+        + " &nbsp; <b>Confianza:</b>"
+        + filtro_link("conf", "", "toda", not conf)
+        + filtro_link("conf", "baja", "&lt; 0.70 (duda)", conf == "baja")
+        + filtro_link("conf", "media", "0.70-0.85", conf == "media")
+        + filtro_link("conf", "alta", "≥ 0.85 (segura)", conf == "alta")
         + " &nbsp; <b>Vía:</b>"
         + filtro_link("metodo", "", "todas", not metodo)
         + "".join(filtro_link("metodo", k, v, metodo == k) for k, v in _METODOS.items())
+        + "</div>"
+        + "<div class=filtros><b>Por hoja:</b>"
+        + "".join(filtro_link("por_hoja", str(n) if n != POR_HOJA_DEFAULT else "",
+                              str(n), por_hoja == n)
+                  for n in POR_HOJA_OPCIONES)
         + "</div>"
     )
 
@@ -429,18 +450,24 @@ def revision(hoja: int = 1, msg: str = "", tabla: str = "", tipo: str = "",
                 "se evalúe agregarlo al catálogo.</div>"
             )
 
+        # Para DESCARTES la línea de pactivo/comp/pres se colapsa por default —
+        # no hace falta editarla si el descarte está bien; basta con el checkbox.
+        linea_oculta = " hidden" if interes == 0 and not es_nuevo else ""
         bloques.append(
             f"<div class='fila {tipo_cls}' data-row='{n}'>"
+            f"<div class=fila-head>"
+            f"<input type=checkbox class=marcar name=procesar value='{f['id']}' "
+            f"data-row='{n}' checked>"
             f"<div class=meta>{badge} &nbsp; "
             f"<b>Licitación {_e(num_lic.get((f['tabla_origen'], f['fila_id'])) or '—')}</b>"
             f" · {_e(f['tabla_origen'])} #{f['fila_id']} · "
             f"<span class='badge {'b-baja' if conf < 0.7 else 'b-alta'}'>confianza {conf:.2f}</span>"
-            f"{via}{ent}</div>"
+            f"{via}{ent}</div></div>"
             f"<div class=desc>{_e((f.get('descripcion') or '')[:300])}</div>"
             f"<div class=razon>Claude: {_e(f.get('razon'))}</div>"
             + aviso_nuevo
             + f"<input type=hidden name=log_id value='{f['id']}'>"
-            "<div class=linea>"
+            f"<div class='linea linea-edicion' data-row='{n}'{linea_oculta}>"
             f"<select name=decision class=decision data-row='{n}'>"
             "<option value=aprobar selected>Aprobar</option>"
             "<option value=corregir>Corregir</option>"
@@ -467,9 +494,11 @@ def revision(hoja: int = 1, msg: str = "", tabla: str = "", tipo: str = "",
 
     qs_base = "&".join(p for p in (f"tabla={tabla}" if tabla else "",
                                    f"tipo={tipo}" if tipo else "",
-                                   f"metodo={metodo}" if metodo else "") if p)
+                                   f"metodo={metodo}" if metodo else "",
+                                   f"conf={conf}" if conf else "",
+                                   f"por_hoja={por_hoja}" if por_hoja != POR_HOJA_DEFAULT else "") if p)
     qs_base = ("&" + qs_base) if qs_base else ""
-    n_hojas = (total + POR_HOJA - 1) // POR_HOJA
+    n_hojas = (total + por_hoja - 1) // por_hoja
     pag = "<div class=pag>"
     if hoja > 1:
         pag += f"<a href='/revision?hoja={hoja-1}{qs_base}'>« anterior</a>"
@@ -480,17 +509,23 @@ def revision(hoja: int = 1, msg: str = "", tabla: str = "", tipo: str = "",
 
     cuerpo = (
         f"<h1>Cola de revisión · {total} pendientes</h1>{aviso}{filtros}"
-        f"<form method=post action='/revisar-hoja'>"
+        f"<form method=post action='/revisar-hoja' id='formhoja'>"
         f"<input type=hidden name=hoja value='{hoja}'>"
         f"<input type=hidden name=tabla value='{_e(tabla)}'>"
         f"<input type=hidden name=tipo value='{_e(tipo)}'>"
         f"<input type=hidden name=metodo value='{_e(metodo)}'>"
-        "<div class=barra><label>Revisor:</label>"
+        f"<input type=hidden name=conf value='{_e(conf)}'>"
+        f"<input type=hidden name=por_hoja value='{por_hoja}'>"
+        "<div class=barra>"
+        "<label>Revisor:</label>"
         "<input name=revisor placeholder='tu nombre' required>"
-        "<button type=submit>Guardar esta hoja</button>"
-        "<span style='font-size:13px;color:#6b7689'>Se guardan solo las "
-        f"{POR_HOJA} filas de esta hoja. Editar pactivo/comp/pres marca la fila "
-        "como \"Corregir\" automáticamente.</span></div>"
+        "<button type=button class=sec onclick='marcarTodos(true)'>Tildar todas</button>"
+        "<button type=button class=sec onclick='marcarTodos(false)'>Destildar todas</button>"
+        "<button type=submit>Aprobar <span id=cuenta>0</span> marcadas</button>"
+        "<span style='font-size:13px;color:#6b7689'>Por default todas vienen "
+        "tildadas; destildá solo las que dudás (quedan pendientes para revisar luego). "
+        "Editar pactivo/comp/pres marca la fila como \"Corregir\" auto.</span>"
+        "</div>"
         + "".join(bloques) + pag + "</form>" + datalist + _JS
     )
     return _layout("Cola de revisión", cuerpo)
@@ -528,10 +563,58 @@ function alCambiarPactivo(n){
 }
 document.querySelectorAll('.fila[data-row]').forEach(function(f){
   var n=f.dataset.row, e=fila(n);
-  e.pac.addEventListener('change',function(){alCambiarPactivo(n);});
-  e.com.addEventListener('change',function(){marcar(n);});
-  e.pre.addEventListener('change',function(){marcar(n);});
+  if(e.pac){e.pac.addEventListener('change',function(){alCambiarPactivo(n);});}
+  if(e.com){e.com.addEventListener('change',function(){marcar(n);});}
+  if(e.pre){e.pre.addEventListener('change',function(){marcar(n);});}
 });
+
+// Checkbox por fila: tildada = se procesa (aprobar/corregir/descartar segun el
+// select); destildada = la fila NO se incluye en el batch y queda pendiente
+// para revisar luego. Por default vienen tildadas — es el patrón "aprobar
+// todas menos las que destildo".
+function actualizarCuenta(){
+  var marcadas = document.querySelectorAll('.fila input.marcar:checked').length;
+  var span = document.getElementById('cuenta');
+  if(span){span.textContent = marcadas;}
+}
+function aplicarEstadoMarca(cb){
+  var fila = cb.closest('.fila');
+  if(!fila) return;
+  if(cb.checked){fila.classList.remove('skip');}
+  else{fila.classList.add('skip');}
+}
+function marcarTodos(estado){
+  document.querySelectorAll('.fila input.marcar').forEach(function(cb){
+    cb.checked = estado;
+    aplicarEstadoMarca(cb);
+  });
+  actualizarCuenta();
+}
+document.querySelectorAll('.fila input.marcar').forEach(function(cb){
+  aplicarEstadoMarca(cb);
+  cb.addEventListener('change', function(){
+    aplicarEstadoMarca(cb); actualizarCuenta();
+  });
+});
+// click sobre la descripción / cuerpo del card también togglea el checkbox
+// (para destildar más rápido al ojear); excluye clicks sobre inputs/labels.
+document.querySelectorAll('.fila').forEach(function(f){
+  f.addEventListener('click', function(ev){
+    if(ev.target.closest('input, select, label, button, .linea-edicion, .nuevo-aviso')) return;
+    var cb = f.querySelector('input.marcar');
+    if(!cb) return;
+    cb.checked = !cb.checked;
+    aplicarEstadoMarca(cb); actualizarCuenta();
+  });
+});
+// expandir la línea de edición de los descartes al hacer doble-click sobre la fila
+document.querySelectorAll('.fila').forEach(function(f){
+  f.addEventListener('dblclick', function(ev){
+    var linea = f.querySelector('.linea-edicion');
+    if(linea && linea.hidden){ linea.hidden = false; ev.preventDefault(); }
+  });
+});
+actualizarCuenta();
 </script>"""
 
 
@@ -542,21 +625,32 @@ def revisar_hoja(
     tabla: str = Form(""),
     tipo: str = Form(""),
     metodo: str = Form(""),
+    conf: str = Form(""),
+    por_hoja: int = Form(POR_HOJA_DEFAULT),
     log_id: list[str] = Form([]),
     decision: list[str] = Form([]),
     pactivo: list[str] = Form([]),
     composicion: list[str] = Form([]),
     presentacion: list[str] = Form([]),
     motivo: list[str] = Form([]),
+    procesar: list[str] = Form([]),
 ):
     revisor = revisor.strip()[:80] or "anónimo"
     ahora = datetime.now()
     aplicadas = 0
     sin_motivo = 0
+    saltadas = 0
+    # `procesar` lleva los log_id de las filas QUE el revisor dejó tildadas
+    # (la mayoría — el patrón es "aprobar todas menos las que destildo"). Las
+    # destildadas se saltan y quedan pendientes para revisar luego.
+    set_procesar = set(procesar)
     conn = conectar()
     try:
         with conn.cursor() as cur:
             for i, lid in enumerate(log_id):
+                if lid not in set_procesar:
+                    saltadas += 1
+                    continue
                 dec = decision[i] if i < len(decision) else "aprobar"
                 pact = (pactivo[i] if i < len(pactivo) else "").strip()
                 comp = (composicion[i] if i < len(composicion) else "").strip()
@@ -625,8 +719,10 @@ def revisar_hoja(
         conn.close()
 
     msg = f"{aplicadas} fila(s) revisada(s)."
+    if saltadas:
+        msg += f" {saltadas} destildada(s) quedaron pendientes."
     if sin_motivo:
-        msg += f" {sin_motivo} quedaron pendientes: falta el motivo obligatorio."
+        msg += f" {sin_motivo} sin motivo obligatorio."
     qs = f"/revision?hoja={hoja}&msg={msg}"
     if tabla:
         qs += f"&tabla={tabla}"
@@ -634,6 +730,10 @@ def revisar_hoja(
         qs += f"&tipo={tipo}"
     if metodo:
         qs += f"&metodo={metodo}"
+    if conf:
+        qs += f"&conf={conf}"
+    if por_hoja != POR_HOJA_DEFAULT:
+        qs += f"&por_hoja={por_hoja}"
     return RedirectResponse(qs, status_code=303)
 
 

@@ -88,6 +88,20 @@ form.alta textarea { flex: 1; min-width: 320px; }
 .modulo-card:hover { transform: translateY(-2px); box-shadow: 0 4px 10px rgba(0,0,0,.10); }
 .modulo-card .titulo { font-size: 17px; font-weight: 700; margin-bottom: 6px; }
 .modulo-card .desc { font-size: 13px; color: #6b7689; }
+
+/* /revision — patrón "todas tildadas por defecto, destildá las dudosas" */
+.fila { cursor: pointer; transition: opacity .15s, background .15s; }
+.fila-head { display: flex; align-items: center; gap: 12px; }
+.fila input.marcar { transform: scale(1.5); accent-color: #1b6b3a; cursor: pointer;
+                     flex-shrink: 0; }
+.fila.skip { opacity: 0.45; background: #f5f5f5; border-left-color: #95a5b8 !important; }
+.fila.skip .desc { text-decoration: line-through; color: #6b7689; }
+.fila.skip:hover { opacity: 0.7; }
+/* la línea de edición no togglea el card cuando se interactúa con ella */
+.fila .linea-edicion { cursor: auto; }
+.fila .linea-edicion[hidden] { display: none; }
+#cuenta { background: rgba(255,255,255,.22); padding: 1px 8px; border-radius: 4px;
+          margin: 0 2px; font-weight: 700; }
 """
 
 # Items del nav. Si se agrega una sección al panel, se suma acá.
