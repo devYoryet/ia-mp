@@ -297,9 +297,13 @@ def main():
             server=args.server
         )
         
-        conn.set_charset_collation('utf8', 'utf8_general_ci')
-        
-        # Configurar el cursor para SET NAMES
+        # MySQL 8 + mysql-connector-python 9.x: 'utf8_general_ci' fue renombrado
+        # a 'utf8mb3_general_ci' y el driver moderno ya no lo acepta. La BD y la
+        # tabla creadas por este script usan utf8mb4/utf8mb4_unicode_ci (ver
+        # create_table_if_not_exists), asi que alineamos la conexion con eso.
+        conn.set_charset_collation('utf8mb4', 'utf8mb4_unicode_ci')
+
+        # Refuerzo en el lado server.
         cursor = conn.cursor()
         cursor.execute("SET NAMES utf8mb4")
         cursor.close()
