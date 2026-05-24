@@ -253,6 +253,38 @@ def insert_batch(conn, table, batch):
     finally:
         cursor.close()
 
+def crear_indice_fecha_envio(conn, table_name):
+    """Crea un indice en FechaEnvio si no existe.
+
+    Se llama DESPUES de la insercion masiva: indexar sobre la tabla ya cargada
+    es mas rapido que mantener el indice durante 440k inserts. Idempotente:
+    MySQL no soporta CREATE INDEX IF NOT EXISTS, asi que verificamos antes con
+    INFORMATION_SCHEMA para que re-subir el mismo CSV no falle por duplicado.
+    """
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS "
+            "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s "
+            "AND INDEX_NAME = 'idx_FechaEnvio'",
+            (table_name,),
+        )
+        if cursor.fetchone()[0] > 0:
+            print("    [OK] Indice idx_FechaEnvio ya existe en '{0}'.".format(table_name))
+            return
+        print("    Creando indice idx_FechaEnvio en '{0}'...".format(table_name))
+        cursor.execute(
+            "CREATE INDEX idx_FechaEnvio ON `{0}` (FechaEnvio)".format(table_name)
+        )
+        conn.commit()
+        print("    [OK] Indice idx_FechaEnvio creado.")
+    except Exception as e:
+        # No es critico: si falla la indexacion, los datos ya estan insertados.
+        print("    [WARNING] No se pudo crear indice idx_FechaEnvio: {0}".format(e))
+    finally:
+        cursor.close()
+
+
 def check_row_count(conn, table_name):
     cursor = conn.cursor()
     try:
@@ -311,6 +343,10 @@ def importar_a_servidor(df, table_name, server_name, db_name, force_local=False)
             progreso = min(i + BATCH_SIZE, total)
             print("    [{0}] {1} / {2} filas".format(server_name, progreso, total),
                   flush=True)
+
+        # Indice sobre FechaEnvio: se hace al final, sobre la tabla ya cargada
+        # (mas rapido que mantener el indice durante la insercion masiva).
+        crear_indice_fecha_envio(conn, table_name)
 
         print("=== {0}: OK ===".format(server_name.upper()))
         return True
