@@ -228,11 +228,15 @@ def main() -> None:
     # SGD con loss log_loss da scores logísticos; los calibramos a probabilidades
     # con sigmoid + cross-validation barato (3 folds), para que predict_proba sea
     # interpretable como confianza y comparable entre clases.
+    # n_jobs=1 deliberado: el CalibratedClassifierCV(cv=3) con n_jobs=-1 sobre
+    # 1.6K clases × 100K features se va a swap y el OOM killer corta. Secuencial
+    # tarda ~2-3x más pero entra cómodo en 4-5 GB. Probado en gestor_oc (2 cores,
+    # 7.8GB RAM): paralelo crashea con SIGKILL; secuencial NO.
     base = SGDClassifier(
         loss="log_loss", alpha=1e-5, max_iter=20,
-        class_weight="balanced", n_jobs=-1, random_state=42,
+        class_weight="balanced", n_jobs=1, random_state=42,
     )
-    clf = CalibratedClassifierCV(base, method="sigmoid", cv=3, n_jobs=-1)
+    clf = CalibratedClassifierCV(base, method="sigmoid", cv=3, n_jobs=1)
 
     pipe = Pipeline([("vec", vec), ("clf", clf)])
 
