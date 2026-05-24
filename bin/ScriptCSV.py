@@ -263,13 +263,76 @@ def check_row_count(conn, table_name):
     except:
         return 0
 
+# Servidores espejo: tras exito en uno, replicamos en el otro. Tanto Clasico
+# como Prime tienen 'oc_items_segmentado' con la misma estructura, asi que el
+# mismo dataframe sirve para los dos sin re-leer el CSV.
+ESPEJO_DE = {"clasico": "prime", "prime": "clasico"}
+
+
+def importar_a_servidor(df, table_name, server_name, db_name, force_local=False):
+    """Conecta a `server_name`, crea la tabla si falta, actualiza la fila de
+    `fecha` para el periodo, e inserta el dataframe en lotes. Devuelve True si
+    todo salio bien, False si fallo en algun paso."""
+
+    print("\n=== Servidor: {0} (BD: {1}) ===".format(server_name.upper(), db_name))
+
+    # 1) Conexion
+    try:
+        conn = vault.get_linux_mysql_connection(
+            database=db_name,
+            force_local=force_local,
+            server=server_name,
+        )
+        # MySQL 8 + mysql-connector-python 9.x: 'utf8_general_ci' fue renombrado
+        # a 'utf8mb3_general_ci' y el driver moderno ya no lo acepta. La tabla
+        # que crea este script usa utf8mb4/utf8mb4_unicode_ci.
+        conn.set_charset_collation("utf8mb4", "utf8mb4_unicode_ci")
+        cursor = conn.cursor()
+        cursor.execute("SET NAMES utf8mb4")
+        cursor.close()
+        print("    Conexion OK")
+    except Exception as e:
+        print("    [ERROR] Conexion {0}: {1}".format(server_name, e))
+        return False
+
+    # 2) Infraestructura + insercion
+    try:
+        create_table_if_not_exists(conn, table_name)
+        actualizar_tabla_fecha(conn, table_name)
+
+        records = df.to_records(index=False).tolist()
+        total = len(records)
+        print("    Insercion masiva en {0}: {1} filas en '{2}'".format(
+            server_name, total, table_name))
+
+        for i in range(0, total, BATCH_SIZE):
+            lote = records[i:i + BATCH_SIZE]
+            insert_batch(conn, table_name, lote)
+            progreso = min(i + BATCH_SIZE, total)
+            print("    [{0}] {1} / {2} filas".format(server_name, progreso, total),
+                  flush=True)
+
+        print("=== {0}: OK ===".format(server_name.upper()))
+        return True
+    except Exception as e:
+        print("    [ERROR] {0}: insercion fallida: {1}".format(server_name, e))
+        return False
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 def main():
     # 1. Configuración de Argumentos
     ap = argparse.ArgumentParser()
     ap.add_argument("--excel", required=True)
     ap.add_argument("--tabla", required=False)
     ap.add_argument("--local", action="store_true")
-    ap.add_argument("--server", default="prime") # Por defecto prime o clasico
+    ap.add_argument("--server", default="prime")  # primario: clasico o prime
+    ap.add_argument("--no-espejo", action="store_true",
+                    help="No replicar al servidor espejo tras exito en el primario.")
     args = ap.parse_args()
 
     # 2. Determinar nombre de tabla
@@ -278,64 +341,43 @@ def main():
         print("ERROR: Especifica --tabla manualmente.")
         return
 
-    # 3. PROCESAR EL ARCHIVO PRIMERO (Esto es lo que tarda y causa desconexión)
+    # 3. Procesar el archivo (lo costoso: solo se hace una vez aunque escribamos
+    # en dos servidores).
     print("Procesando archivo: {0}".format(args.excel))
     df = prepare_dataframe(args.excel)
-
     if len(df) == 0:
         print("Error: El DataFrame esta vacio, el archivo no se leyo bien o no tiene datos.")
         return
-
-    # 4. CONECTAR A LA BASE DE DATOS JUSTO ANTES DE USARLA
-    db_name = "prueba_practica" if args.local else "oc_items_segmentado"
-    print("Solicitando conexion al Vault para BD: '{0}'...".format(db_name))
-    
-    try:
-        conn = vault.get_linux_mysql_connection(
-            database=db_name, 
-            force_local=args.local, 
-            server=args.server
-        )
-        
-        # MySQL 8 + mysql-connector-python 9.x: 'utf8_general_ci' fue renombrado
-        # a 'utf8mb3_general_ci' y el driver moderno ya no lo acepta. La BD y la
-        # tabla creadas por este script usan utf8mb4/utf8mb4_unicode_ci (ver
-        # create_table_if_not_exists), asi que alineamos la conexion con eso.
-        conn.set_charset_collation('utf8mb4', 'utf8mb4_unicode_ci')
-
-        # Refuerzo en el lado server.
-        cursor = conn.cursor()
-        cursor.execute("SET NAMES utf8mb4")
-        cursor.close()
-        
-        print("Conexion establecida exitosamente.")
-    except Exception as e:
-        print("[ERROR CRITICO] Error de conexion: {0}".format(e))
-        return
-
-    # 5. Ejecutar infraestructura (Tabla y Fecha)
-    create_table_if_not_exists(conn, table_name)
-    actualizar_tabla_fecha(conn, table_name)
-    
     print("DEBUG: Filas a insertar: {0}".format(len(df)))
 
-    # 6. Convertir a registros e iniciar inserción masiva
-    records = df.to_records(index=False).tolist()
-    total_filas = len(records)
+    db_name = "prueba_practica" if args.local else "oc_items_segmentado"
 
-    print(" Iniciando insercion masiva: {0} registros en '{1}'".format(total_filas, table_name))
+    # 4. Primario.
+    ok = importar_a_servidor(df, table_name, args.server, db_name, force_local=args.local)
+    if not ok:
+        print("\n[ERROR CRITICO] Fallo en servidor primario {0}.".format(args.server))
+        return
 
-    for i in range(0, total_filas, BATCH_SIZE):
-        lote = records[i : i + BATCH_SIZE]
-        insert_batch(conn, table_name, lote)
-        
-        progreso = min(i + BATCH_SIZE, total_filas)
-        print("    Progreso: {0} / {1} filas procesadas...".format(progreso, total_filas), flush=True)
+    # 5. Espejo (si corresponde).
+    espejo = ESPEJO_DE.get(args.server)
+    if args.local or args.no_espejo or not espejo:
+        print("\nImportacion terminada en {0} (sin espejo).".format(args.server))
+        return
 
-    # 7. Cierre
-    conn.close()
-    print("\n Importacion finalizada con exito!")
-    print("Importacion terminada con exito en tabla: {0}".format(table_name))
+    print("\n>>> Replicando a servidor espejo: {0}".format(espejo.upper()))
+    ok_espejo = importar_a_servidor(df, table_name, espejo, db_name, force_local=False)
+    if ok_espejo:
+        print("\n Importacion finalizada con exito en AMBOS servidores ({0} + {1}).".format(
+            args.server, espejo))
+        print("Importacion terminada con exito en tabla: {0}".format(table_name))
+    else:
+        # Clasico/primario ya quedo escrito; el espejo no. No es CRITICO porque
+        # los datos NO se perdieron, solo no se replicaron. Aviso para que se
+        # rehaga el espejo manualmente sin reprocesar el primario.
+        print("\n[WARNING] Primario {0} quedo OK pero ESPEJO {1} fallo.".format(
+            args.server, espejo))
+        print("Para reintentar SOLO el espejo: subir el archivo con --server {0} --no-espejo".format(
+            espejo))
 
 if __name__ == "__main__":
     main()
