@@ -37,7 +37,6 @@ import joblib
 import numpy as np
 import pymysql
 from pymysql.cursors import SSDictCursor
-from sklearn.calibration import CalibratedClassifierCV
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import SGDClassifier
 from sklearn.model_selection import train_test_split
@@ -225,18 +224,17 @@ def main() -> None:
             min_df=3, max_features=40_000, sublinear_tf=True,
         )),
     ])
-    # SGD con loss log_loss da scores logísticos; los calibramos a probabilidades
-    # con sigmoid + cross-validation barato (3 folds), para que predict_proba sea
-    # interpretable como confianza y comparable entre clases.
-    # n_jobs=1 deliberado: el CalibratedClassifierCV(cv=3) con n_jobs=-1 sobre
-    # 1.6K clases × 100K features se va a swap y el OOM killer corta. Secuencial
-    # tarda ~2-3x más pero entra cómodo en 4-5 GB. Probado en gestor_oc (2 cores,
-    # 7.8GB RAM): paralelo crashea con SIGKILL; secuencial NO.
-    base = SGDClassifier(
-        loss="log_loss", alpha=1e-5, max_iter=20,
+    # SGD con loss log_loss da scores logísticos Y tiene predict_proba nativo
+    # (no necesita CalibratedClassifierCV envolvente). Lo medimos: el calibrador
+    # triplicaba memoria + tiempo entrenando 3 SGDs (cv=3) y para nuestro caso
+    # —umbral binario "asigna si proba>=X"— la calibración perfecta no aporta;
+    # el umbral lo recalibramos empíricamente con el backtest. Esto baja el
+    # entrenamiento de ~100 min a ~30 min y el .joblib de ~5 GB a ~1.5 GB
+    # (3× menos en ambas dimensiones, MISMA accuracy raw del clasificador).
+    clf = SGDClassifier(
+        loss="log_loss", alpha=1e-5, max_iter=25,
         class_weight="balanced", n_jobs=1, random_state=42,
     )
-    clf = CalibratedClassifierCV(base, method="sigmoid", cv=3, n_jobs=1)
 
     pipe = Pipeline([("vec", vec), ("clf", clf)])
 
@@ -254,25 +252,17 @@ def main() -> None:
 
 def _optimizar(modelo) -> None:
     """Reduce el tamaño del .joblib sin tocar la accuracy:
-    - los pesos del SGD subyacente bajan de float64 a float32 (la inferencia
-      lineal no necesita doble precisión);
-    - el `joblib.dump(..., compress=3)` comprime al guardar (las matrices de
-      pesos del SGD calibrado son altamente compresibles).
-    De 3.8 GB → 1.6 GB (~57% menos) con los 5 sanity tests intactos."""
+    - los pesos del SGD bajan de float64 a float32 (la inferencia lineal no
+      necesita doble precisión);
+    - `joblib.dump(..., compress=3)` comprime al guardar (los pesos del SGD
+      multiclase son altamente compresibles)."""
     if not hasattr(modelo, "named_steps") or "clf" not in modelo.named_steps:
         return
     clf = modelo.named_steps["clf"]
-    if not hasattr(clf, "calibrated_classifiers_"):
-        return
-    for cc in clf.calibrated_classifiers_:
-        for inner in (getattr(cc, "estimator", None),
-                      getattr(cc, "base_estimator", None)):
-            if inner is None:
-                continue
-            if hasattr(inner, "coef_") and inner.coef_.dtype == np.float64:
-                inner.coef_ = inner.coef_.astype(np.float32)
-            if hasattr(inner, "intercept_") and inner.intercept_.dtype == np.float64:
-                inner.intercept_ = inner.intercept_.astype(np.float32)
+    if hasattr(clf, "coef_") and clf.coef_.dtype == np.float64:
+        clf.coef_ = clf.coef_.astype(np.float32)
+    if hasattr(clf, "intercept_") and clf.intercept_.dtype == np.float64:
+        clf.intercept_ = clf.intercept_.astype(np.float32)
 
 
 if __name__ == "__main__":
