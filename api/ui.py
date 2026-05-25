@@ -102,6 +102,31 @@ form.alta textarea { flex: 1; min-width: 320px; }
 .fila .linea-edicion[hidden] { display: none; }
 #cuenta { background: rgba(255,255,255,.22); padding: 1px 8px; border-radius: 4px;
           margin: 0 2px; font-weight: 700; }
+
+/* Vista de auditoría — filas ya revisadas, modo lectura */
+.fila.revisada { cursor: default; opacity: 0.95; background: #fafbfc;
+                 border-left-color: #95a5b8; }
+.fila.revisada:hover { opacity: 1; }
+.ts { font-size: 11px; color: #95a5b8; margin-top: 3px; }
+.veredicto { margin-top: 6px; font-size: 13px; color: #3a4252; }
+input[type=date] { padding: 4px 8px; border: 1px solid #cdd5e0; border-radius: 6px;
+                   font-size: 13px; }
+
+/* /comparacion — cross matrix de humano vs IA */
+.matriz { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px;
+          margin: 12px 0 24px; }
+.mcell { display: block; padding: 16px 14px; border-radius: 10px; text-decoration: none;
+         color: inherit; box-shadow: 0 1px 3px rgba(0,0,0,.08);
+         transition: transform .08s, box-shadow .08s; }
+.mcell:hover { transform: translateY(-2px); box-shadow: 0 4px 10px rgba(0,0,0,.12); }
+.mn { font-size: 22px; font-weight: 700; }
+.ml { font-size: 12px; color: #6b7689; margin-top: 2px; }
+.m-ok   { background: #d9f0e1; }
+.m-fp   { background: #f8d7da; }   /* IA dijo interés, humano no — ruido */
+.m-fn   { background: #fde2c0; }   /* IA dijo descarte, humano sí — perdimos venta */
+.m-warn { background: #fff3e0; }   /* pactivo nuevo, revisar */
+.lineh { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; font-size: 13px;
+         margin-top: 8px; padding-top: 8px; border-top: 1px dashed #e6e9ef; }
 """
 
 # Items del nav. Si se agrega una sección al panel, se suma acá.

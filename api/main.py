@@ -215,15 +215,38 @@ def resumen() -> str:
 
 
 # ------------------------------------------------------------ Comparación ---
+# Cross matrix (humano × IA). Las 6 celdas + sus condiciones SQL. Click en cualquiera
+# de las cards lleva a la lista de filas que cayeron ahí — para auditar puntualmente.
+# Notación: hX_iY = humano=X, ia=Y. _NUEVO es ia.pactivo_nuevo IS NOT NULL.
+_CELDAS = {
+    # name : (etiqueta, color, SQL condition)
+    "h1_i1":   ("✓ Acuerdo INTERÉS",    "ok",   "humano_estado_gestor=1 AND ia_interes=1 AND (ia_pactivo_nuevo IS NULL OR ia_pactivo_nuevo='')"),
+    "h1_i0":   ("✗ FALSO NEGATIVO",      "fn",   "humano_estado_gestor=1 AND ia_interes=0"),
+    "h1_nuevo":("⚠ Humano interés, IA nuevo", "warn", "humano_estado_gestor=1 AND ia_pactivo_nuevo IS NOT NULL AND ia_pactivo_nuevo<>''"),
+    "h0_i1":   ("✗ FALSO POSITIVO",      "fp",   "humano_estado_gestor=0 AND ia_interes=1 AND (ia_pactivo_nuevo IS NULL OR ia_pactivo_nuevo='')"),
+    "h0_i0":   ("✓ Acuerdo DESCARTE",    "ok",   "humano_estado_gestor=0 AND ia_interes=0"),
+    "h0_nuevo":("⚠ Humano descarte, IA nuevo", "warn", "humano_estado_gestor=0 AND ia_pactivo_nuevo IS NOT NULL AND ia_pactivo_nuevo<>''"),
+}
+
+
 @app.get("/comparacion", response_class=HTMLResponse)
-def comparacion() -> str:
+def comparacion(cell: str = "", metodo: str = "", pactivo_sug: str = "",
+                limit: int = 100) -> str:
+    # Si vienen filtros de drill-down, mostrar listado en vez de dashboard.
+    if cell or metodo or pactivo_sug:
+        return _comparacion_listado(cell, metodo, pactivo_sug, limit)
+    return _comparacion_dashboard()
+
+
+def _comparacion_dashboard() -> str:
     try:
         tot = _query("SELECT COUNT(*) n FROM clasificador_ia_backtest")[0]["n"]
         if not tot:
             return _layout(
                 "Backtest",
                 "<h1>Backtest · IA vs personas</h1><div class=vacio>Aún no hay filas "
-                "comparadas. Corre el worker en modo test.</div>",
+                "comparadas. El container <code>backtest</code> está procesando 200 "
+                "filas cada 15 min — volvé en un rato.</div>",
             )
         r = _query(
             "SELECT COUNT(*) n, SUM(coincide_interes) ci, "
@@ -232,16 +255,34 @@ def comparacion() -> str:
             "IFNULL(SUM(costo_usd),0) costo, IFNULL(AVG(costo_usd),0) prom "
             "FROM clasificador_ia_backtest"
         )[0]
-        # Gasto acumulado de la cuenta — del libro de costos, que NO se trunca
-        # (a diferencia de clasificador_ia_backtest). Es el mismo número que en /.
-        acum = _query(
-            "SELECT IFNULL(SUM(costo_usd),0) c FROM clasificador_ia_costos"
-        )[0]["c"]
-        errores = _query(
-            "SELECT tabla_origen, fila_id, descripcion, humano_estado_gestor, humano_pactivo, "
-            "ia_interes, ia_pactivo FROM clasificador_ia_backtest "
-            "WHERE coincide_interes=0 OR coincide_pactivo=0 ORDER BY creado_en DESC LIMIT 40"
+        # Cross matrix: conteos de cada celda en una sola query (CASE WHEN ... THEN 1)
+        case_parts = ", ".join(
+            f"SUM(CASE WHEN {sql} THEN 1 ELSE 0 END) AS {name}"
+            for name, (_, _, sql) in _CELDAS.items()
         )
+        matriz = _query(f"SELECT {case_parts} FROM clasificador_ia_backtest")[0]
+        # Por método — cuánto resuelve cada etapa, accuracy de pact, costo
+        por_metodo = _query(
+            "SELECT ia_metodo, COUNT(*) n, "
+            "SUM(coincide_interes) ci, "
+            "SUM(coincide_pactivo) cp, COUNT(coincide_pactivo) ncp, "
+            "IFNULL(SUM(costo_usd),0) costo "
+            "FROM clasificador_ia_backtest "
+            "GROUP BY ia_metodo ORDER BY n DESC"
+        )
+        # Top pactivos sospechosos: IA sugirió X, humano descartó. Min N=5 para no
+        # pescar ruido de clases con 1-2 filas.
+        sospechosos = _query(
+            "SELECT ia_pactivo p, "
+            "COUNT(*) n, "
+            "SUM(humano_estado_gestor=0) descartes, "
+            "ROUND(SUM(humano_estado_gestor=0)/COUNT(*)*100,1) pct_desc "
+            "FROM clasificador_ia_backtest "
+            "WHERE ia_interes=1 AND ia_pactivo IS NOT NULL "
+            "GROUP BY ia_pactivo HAVING n >= 5 AND pct_desc >= 50 "
+            "ORDER BY pct_desc DESC, n DESC LIMIT 25"
+        )
+        acum = _query("SELECT IFNULL(SUM(costo_usd),0) c FROM clasificador_ia_costos")[0]["c"]
     except Exception as exc:  # noqa: BLE001
         return _layout("Error", f"<div class=vacio>{_e(exc)}</div>")
 
@@ -250,38 +291,158 @@ def comparacion() -> str:
 
     proy = float(r["prom"] or 0) * config.filas_mes_estimado
     cards = (
-        "<h2>Backtest actual — el contenido vigente de la tabla de comparación</h2>"
         "<div class=cards>"
-        f"<div class=card><div class=n>{r['n']}</div><div class=l>Filas en el backtest actual</div></div>"
+        f"<div class=card><div class=n>{r['n']:,}</div><div class=l>Filas comparadas</div></div>"
         f"<div class=card><div class=n>{pct(r['ci'], r['n'])}</div><div class=l>Acierto interés</div></div>"
         f"<div class=card><div class=n>{pct(r['cp'], r['ncp'])}</div><div class=l>Acierto pactivo</div></div>"
-        f"<div class=card><div class=n>{pct(r['cc'], r['ncp'])}</div><div class=l>Acierto composición</div></div>"
-        f"<div class=card><div class=n>{pct(r['cpr'], r['ncp'])}</div><div class=l>Acierto presentación</div></div>"
-        "</div>"
-        "<h2>Costo</h2><div class=cards>"
-        f"<div class=card><div class=n>${float(r['costo']):.2f}</div>"
-        f"<div class=l>Gasto de este backtest</div></div>"
-        f"<div class=card><div class=n>${float(r['prom'] or 0)*1000:.2f}</div>"
-        f"<div class=l>Costo / 1.000 filas</div></div>"
-        f"<div class=card><div class=n>${proy:,.0f}</div><div class=l>Proyección mensual</div></div>"
-        f"<div class=card><div class=n>${float(acum):.2f}</div>"
-        f"<div class=l>Gasto total acumulado (de ${config.budget_usd:.0f})</div></div>"
+        f"<div class=card><div class=n>{pct(r['cc'], r['ncp'])}</div><div class=l>Acierto comp</div></div>"
+        f"<div class=card><div class=n>{pct(r['cpr'], r['ncp'])}</div><div class=l>Acierto pres</div></div>"
+        f"<div class=card><div class=n>${float(r['costo']):.2f}</div><div class=l>Costo backtest</div></div>"
+        f"<div class=card><div class=n>${float(r['prom'] or 0)*1000:.2f}</div><div class=l>$ / 1.000 filas</div></div>"
+        f"<div class=card><div class=n>${proy:,.0f}</div><div class=l>Proyección/mes</div></div>"
         "</div>"
     )
-    filas = "".join(
-        f"<tr><td>{_e(e['tabla_origen'])} #{e['fila_id']}</td>"
-        f"<td>{_e((e.get('descripcion') or '')[:80])}</td>"
-        f"<td>estado={_e(e['humano_estado_gestor'])}<br>{_e(e.get('humano_pactivo'))}</td>"
-        f"<td>interes={_e(e['ia_interes'])}<br>{_e(e.get('ia_pactivo'))}</td></tr>"
-        for e in errores
+
+    # Cross matrix 2x3 — cards clickeables, color según naturaleza
+    matriz_html = ["<h2>Cruz humano vs IA — click en cualquier celda para auditar</h2>",
+                   "<div class='matriz'>"]
+    for name, (etiq, color, _) in _CELDAS.items():
+        n = matriz.get(name, 0) or 0
+        matriz_html.append(
+            f"<a class='mcell m-{color}' href='/comparacion?cell={name}'>"
+            f"<div class=mn>{n:,}</div>"
+            f"<div class=ml>{etiq}</div>"
+            f"</a>"
+        )
+    matriz_html.append("</div>")
+
+    # Tabla por método con link
+    metodo_rows = []
+    for m in por_metodo:
+        nm = m["ia_metodo"] or "?"
+        etiqueta = _METODOS.get(nm, nm)
+        ai = pct(m["ci"], m["n"])
+        ap = pct(m["cp"], m["ncp"]) if m["ncp"] else "—"
+        costo = float(m["costo"] or 0)
+        metodo_rows.append(
+            f"<tr><td><a href='/comparacion?metodo={nm}'>{_e(etiqueta)}</a></td>"
+            f"<td>{m['n']:,}</td><td>{ai}</td><td>{ap}</td>"
+            f"<td>${costo:.4f}</td></tr>"
+        )
+    metodo_html = (
+        "<h2>Por etapa de la cascada</h2><table>"
+        "<tr><th>Vía</th><th>Filas</th><th>Acierto interés</th>"
+        "<th>Acierto pactivo</th><th>Costo</th></tr>"
+        + "".join(metodo_rows) + "</table>"
     )
+
+    # Top pactivos sospechosos — el "Servicio de Aseo, Adjunto, Cocina" de la vida
+    if sospechosos:
+        sosp_rows = "".join(
+            f"<tr><td><a href='/comparacion?pactivo_sug={_e(s['p'])}'>{_e(s['p'])}</a></td>"
+            f"<td>{s['n']:,}</td><td>{s['descartes']:,}</td>"
+            f"<td><b>{s['pct_desc']}%</b></td></tr>"
+            for s in sospechosos
+        )
+        sosp_html = (
+            "<h2>Pactivos sospechosos — IA dijo interés pero humano descarta seguido</h2>"
+            "<p style='font-size:13px;color:#6b7689'>Filtro: ≥5 filas con ese pactivo y ≥50% descartadas. "
+            "Candidatos a regla automática \"este pactivo → descarte\".</p>"
+            "<table><tr><th>Pactivo sugerido por IA</th><th>Filas</th>"
+            "<th>Descartes humanos</th><th>% descarte</th></tr>"
+            + sosp_rows + "</table>"
+        )
+    else:
+        sosp_html = ("<h2>Pactivos sospechosos</h2><div class=vacio>"
+                     "Sin pactivos con ≥50% de descartes humanos (mínimo 5 filas). 🎉</div>")
+
+    coste_acum = (
+        f"<p style='font-size:13px;color:#6b7689'>Gasto total acumulado de la cuenta: "
+        f"<b>${float(acum):.2f}</b> de ${config.budget_usd:.0f} (mensual)</p>"
+    )
+
     cuerpo = (
-        "<h1>Backtest · IA vs personas</h1>" + cards
-        + "<h2>Discrepancias recientes</h2><table>"
-        "<tr><th>Fila</th><th>Descripción</th><th>Persona</th><th>IA</th></tr>"
-        + (filas or "<tr><td colspan=4>Sin discrepancias</td></tr>") + "</table>"
+        "<h1>Backtest · IA vs personas</h1>"
+        + cards + coste_acum
+        + "".join(matriz_html)
+        + metodo_html
+        + sosp_html
     )
     return _layout("Backtest", cuerpo)
+
+
+def _comparacion_listado(cell: str, metodo: str, pactivo_sug: str, limit: int) -> str:
+    """Drill-down: muestra las filas que caen en un filtro específico."""
+    limit = max(20, min(500, limit))
+    cond = []
+    args: list = []
+    titulo_bits = []
+    if cell in _CELDAS:
+        etiq, _, sql = _CELDAS[cell]
+        cond.append(sql)
+        titulo_bits.append(etiq)
+    if metodo in _METODOS:
+        cond.append("ia_metodo=%s")
+        args.append(metodo)
+        titulo_bits.append(f"vía {_METODOS[metodo]}")
+    if pactivo_sug:
+        cond.append("ia_pactivo=%s")
+        args.append(pactivo_sug)
+        titulo_bits.append(f"pactivo IA = «{pactivo_sug}»")
+
+    where = " AND ".join(cond) if cond else "1=1"
+    try:
+        total = _query(
+            f"SELECT COUNT(*) n FROM clasificador_ia_backtest WHERE {where}",
+            tuple(args),
+        )[0]["n"]
+        filas = _query(
+            "SELECT tabla_origen, fila_id, descripcion, humano_estado_gestor, "
+            "humano_pactivo, humano_composicion, humano_presentacion, "
+            "ia_interes, ia_pactivo, ia_composicion, ia_presentacion, "
+            "ia_metodo, ia_razon, ia_pactivo_nuevo, creado_en "
+            f"FROM clasificador_ia_backtest WHERE {where} "
+            "ORDER BY creado_en DESC LIMIT %s",
+            tuple(args) + (limit,),
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _layout("Error", f"<div class=vacio>{_e(exc)}</div>")
+
+    bloques = []
+    for f in filas:
+        ia_pact = f.get("ia_pactivo") or f.get("ia_pactivo_nuevo") or "—"
+        hp = f.get("humano_pactivo") or "—"
+        ia_int = "interés" if f.get("ia_interes") == 1 else "descarte"
+        hu_int = "interés" if f.get("humano_estado_gestor") == 1 else "descarte"
+        bloques.append(
+            f"<div class=fila>"
+            f"<div class=meta><b>{_e(f['tabla_origen'])} #{f['fila_id']}</b> · "
+            f"<span class='badge b-met'>vía {_e(_METODOS.get(f.get('ia_metodo'), f.get('ia_metodo') or '?'))}</span>"
+            f"</div>"
+            f"<div class=desc>{_e((f.get('descripcion') or '')[:280])}</div>"
+            f"<div class=razon>IA: {_e(f.get('ia_razon') or '')}</div>"
+            "<div class=lineh>"
+            f"<div><b>Humano</b> ({hu_int}): {_e(hp)}"
+            f" · {_e(f.get('humano_composicion') or '—')}"
+            f" · {_e(f.get('humano_presentacion') or '—')}</div>"
+            f"<div><b>IA</b> ({ia_int}): {_e(ia_pact)}"
+            f" · {_e(f.get('ia_composicion') or '—')}"
+            f" · {_e(f.get('ia_presentacion') or '—')}</div>"
+            "</div></div>"
+        )
+
+    titulo = " · ".join(titulo_bits) or "(todas)"
+    qs_paginar = f"cell={cell}&metodo={metodo}&pactivo_sug={pactivo_sug}"
+    cuerpo = (
+        f"<h1>Backtest · {_e(titulo)}</h1>"
+        f"<p style='font-size:13px'><b>{total:,}</b> filas encuentran este filtro · "
+        f"<a href='/comparacion'>← volver al dashboard</a></p>"
+        + "".join(bloques)
+        + (f"<p style='font-size:13px;color:#6b7689'>Mostrando primeras {limit}. "
+           f"Subir LIMIT: <a href='/comparacion?{qs_paginar}&limit=500'>ver 500</a></p>"
+           if total > limit else "")
+    )
+    return _layout("Backtest detalle", cuerpo)
 
 
 # --------------------------------------------------------------- Revisión ---
@@ -310,12 +471,24 @@ _METODOS = {
 }
 
 
+_ESTADOS = {"pendientes": "revisado=0", "revisadas": "revisado=1", "todas": "1=1"}
+_RANGOS = {
+    "hoy": "creado_en >= CURDATE()",
+    "ayer": "creado_en >= CURDATE() - INTERVAL 1 DAY AND creado_en < CURDATE()",
+    "semana": "creado_en >= CURDATE() - INTERVAL 7 DAY",
+    "mes": "creado_en >= CURDATE() - INTERVAL 30 DAY",
+}
+
+
 @app.get("/revision", response_class=HTMLResponse)
 def revision(hoja: int = 1, msg: str = "", tabla: str = "", tipo: str = "",
-             metodo: str = "", conf: str = "", por_hoja: int = 0) -> str:
+             metodo: str = "", conf: str = "", por_hoja: int = 0,
+             estado: str = "pendientes", rango: str = "",
+             desde: str = "", hasta: str = "") -> str:
     hoja = max(1, hoja)
     por_hoja = por_hoja if por_hoja in POR_HOJA_OPCIONES else POR_HOJA_DEFAULT
-    cond = ["revisado=0"]
+    estado = estado if estado in _ESTADOS else "pendientes"
+    cond = [_ESTADOS[estado]]
     args: list = []
     if tabla in TABLAS_VALIDAS:
         cond.append("tabla_origen=%s")
@@ -333,7 +506,20 @@ def revision(hoja: int = 1, msg: str = "", tabla: str = "", tipo: str = "",
         cond.append("confianza >= 0.7 AND confianza < 0.85")
     elif conf == "alta":
         cond.append("confianza >= 0.85")
+    # Fecha — preset (rango) o rango personalizado (desde/hasta, formato YYYY-MM-DD).
+    if rango in _RANGOS:
+        cond.append(_RANGOS[rango])
+    if desde:
+        cond.append("creado_en >= %s")
+        args.append(desde + " 00:00:00")
+    if hasta:
+        cond.append("creado_en <= %s")
+        args.append(hasta + " 23:59:59")
     where = " AND ".join(cond)
+    # Para REVISADAS ordeno por revisado_en DESC (lo más recientemente cerrado
+    # primero — es lo que el revisor quiere ver para auditar). Para pendientes,
+    # mantengo el orden por confianza ASC (lo dudoso primero).
+    orden = "revisado_en DESC" if estado == "revisadas" else "confianza ASC, creado_en DESC"
     try:
         total = _query(
             f"SELECT COUNT(*) n FROM clasificador_ia_log WHERE {where}", tuple(args)
@@ -341,8 +527,10 @@ def revision(hoja: int = 1, msg: str = "", tabla: str = "", tipo: str = "",
         filas = _query(
             "SELECT id, tabla_origen, fila_id, descripcion, interes_sugerido, "
             "pactivo_sugerido, composicion_sugerida, presentacion_sugerida, "
-            f"confianza, razon, pactivo_nuevo, metodo FROM clasificador_ia_log WHERE {where} "
-            "ORDER BY confianza ASC, creado_en DESC LIMIT %s OFFSET %s",
+            "confianza, razon, pactivo_nuevo, metodo, creado_en, revisado, "
+            "revisado_por, revisado_en, feedback_correcto, feedback_pactivo, "
+            "feedback_notas FROM clasificador_ia_log "
+            f"WHERE {where} ORDER BY {orden} LIMIT %s OFFSET %s",
             tuple(args) + (por_hoja, (hoja - 1) * por_hoja),
         )
     except Exception as exc:  # noqa: BLE001
@@ -365,17 +553,24 @@ def revision(hoja: int = 1, msg: str = "", tabla: str = "", tipo: str = "",
             except Exception:  # noqa: BLE001
                 pass
 
-    # barra de filtros (mantiene el estado de los otros filtros en cada enlace)
+    # barra de filtros (mantiene el estado de los otros filtros en cada enlace).
+    # "estado" no usa default-vacío como los otros — siempre tiene valor.
     def filtro_link(clave: str, valor: str, etiqueta: str, activo: bool) -> str:
-        estado = {"tabla": tabla, "tipo": tipo, "metodo": metodo,
-                  "conf": conf, "por_hoja": str(por_hoja) if por_hoja != POR_HOJA_DEFAULT else ""}
-        estado[clave] = valor
-        qs = "&".join(f"{k}={v}" for k, v in estado.items() if v)
+        cur = {"tabla": tabla, "tipo": tipo, "metodo": metodo,
+               "conf": conf, "rango": rango, "desde": desde, "hasta": hasta,
+               "estado": estado if estado != "pendientes" else "",
+               "por_hoja": str(por_hoja) if por_hoja != POR_HOJA_DEFAULT else ""}
+        cur[clave] = valor
+        qs = "&".join(f"{k}={v}" for k, v in cur.items() if v)
         cls = " class=on" if activo else ""
         return f"<a href='/revision?{qs}'{cls}>{etiqueta}</a>"
 
     filtros = (
-        "<div class=filtros><b>Tabla:</b>"
+        "<div class=filtros><b>Estado:</b>"
+        + filtro_link("estado", "", "pendientes", estado == "pendientes")
+        + filtro_link("estado", "revisadas", "revisadas", estado == "revisadas")
+        + filtro_link("estado", "todas", "todas", estado == "todas")
+        + " &nbsp; <b>Tabla:</b>"
         + filtro_link("tabla", "", "todas", not tabla)
         + filtro_link("tabla", "compra_agil", "compra ágil", tabla == "compra_agil")
         + filtro_link("tabla", "Licitaciones_diarias", "licitaciones",
@@ -385,7 +580,28 @@ def revision(hoja: int = 1, msg: str = "", tabla: str = "", tipo: str = "",
         + filtro_link("tipo", "interes", "interés", tipo == "interes")
         + filtro_link("tipo", "descarte", "descarte", tipo == "descarte")
         + filtro_link("tipo", "nuevo", "pactivo nuevo", tipo == "nuevo")
-        + " &nbsp; <b>Confianza:</b>"
+        + "</div>"
+        + "<div class=filtros><b>Fecha:</b>"
+        + filtro_link("rango", "", "todas", not rango and not desde and not hasta)
+        + filtro_link("rango", "hoy", "hoy", rango == "hoy")
+        + filtro_link("rango", "ayer", "ayer", rango == "ayer")
+        + filtro_link("rango", "semana", "última semana", rango == "semana")
+        + filtro_link("rango", "mes", "último mes", rango == "mes")
+        + (
+            f" &nbsp; <form method=get action='/revision' style='display:inline;font-size:13px'>"
+            f"<input type=hidden name=estado value='{_e(estado)}'>"
+            f"<input type=hidden name=tabla value='{_e(tabla)}'>"
+            f"<input type=hidden name=tipo value='{_e(tipo)}'>"
+            f"<input type=hidden name=metodo value='{_e(metodo)}'>"
+            f"<input type=hidden name=conf value='{_e(conf)}'>"
+            f"<input type=hidden name=por_hoja value='{por_hoja}'>"
+            f"<input type=date name=desde value='{_e(desde)}'>"
+            f"&nbsp;a&nbsp;<input type=date name=hasta value='{_e(hasta)}'>"
+            f"&nbsp;<button type=submit class=sec style='padding:4px 10px'>aplicar</button>"
+            f"</form>"
+        )
+        + "</div>"
+        + "<div class=filtros><b>Confianza:</b>"
         + filtro_link("conf", "", "toda", not conf)
         + filtro_link("conf", "baja", "&lt; 0.70 (duda)", conf == "baja")
         + filtro_link("conf", "media", "0.70-0.85", conf == "media")
@@ -410,11 +626,16 @@ def revision(hoja: int = 1, msg: str = "", tabla: str = "", tipo: str = "",
 
     cat = _catalogo()
     aviso = f"<div class=aviso>{_e(msg)}</div>" if msg else ""
+
+    def _fmt_dt(dt):
+        return dt.strftime("%d-%m-%Y %H:%M") if dt else "—"
+
     bloques = []
     for n, f in enumerate(filas):
         conf = float(f.get("confianza") or 0)
         interes = f.get("interes_sugerido")
         es_nuevo = bool((f.get("pactivo_nuevo") or "").strip())
+        revisada = bool(f.get("revisado"))
         if interes == 0:
             tipo_cls, badge = "t-descarte", "<span class='badge b-desc'>DESCARTE sugerido</span>"
         elif es_nuevo:
@@ -436,6 +657,47 @@ def revision(hoja: int = 1, msg: str = "", tabla: str = "", tipo: str = "",
             else:
                 ent = f" · <span class='badge b-ent-i'>entrenamiento: INTERÉS {1 - pd:.2f}</span>"
 
+        # Encabezado común con timestamps. Para revisadas suma quién y cuándo.
+        meta_html = (
+            f"<div class=meta>{badge} &nbsp; "
+            f"<b>Licitación {_e(num_lic.get((f['tabla_origen'], f['fila_id'])) or '—')}</b>"
+            f" · {_e(f['tabla_origen'])} #{f['fila_id']} · "
+            f"<span class='badge {'b-baja' if conf < 0.7 else 'b-alta'}'>confianza {conf:.2f}</span>"
+            f"{via}{ent}"
+            f"<div class=ts>clasificada {_fmt_dt(f.get('creado_en'))}"
+            + (
+                f" · revisada {_fmt_dt(f.get('revisado_en'))} "
+                f"por <b>{_e(f.get('revisado_por') or '—')}</b>"
+                if revisada else ""
+            )
+            + "</div></div>"
+        )
+
+        # FILA YA REVISADA: solo lectura, sin checkbox ni form. Muestra el
+        # veredicto humano (aprobada / corregida) y sus notas para auditoría.
+        if revisada:
+            if f.get("feedback_correcto") == 1:
+                veredicto = "<span class='badge b-int'>✓ APROBADA</span>"
+            else:
+                # corregida o descartada; feedback_pactivo solo si corrigió
+                fp = (f.get("feedback_pactivo") or "").strip()
+                fn = (f.get("feedback_notas") or "").strip()
+                etiqueta = "✏ CORREGIDA" if fp else "✗ DESCARTADA"
+                detalle = (f" → <b>{_e(fp)}</b>" if fp else "")
+                if fn:
+                    detalle += f" · motivo: {_e(fn)}"
+                veredicto = f"<span class='badge b-desc'>{etiqueta}</span>{detalle}"
+            bloques.append(
+                f"<div class='fila revisada {tipo_cls}'>"
+                f"<div class=fila-head><div style='width:24px'></div>{meta_html}</div>"
+                f"<div class=desc>{_e((f.get('descripcion') or '')[:300])}</div>"
+                f"<div class=razon>IA: {_e(f.get('razon'))}</div>"
+                f"<div class=veredicto>{veredicto}</div>"
+                f"</div>"
+            )
+            continue
+
+        # FILA PENDIENTE: editable, con checkbox para procesarla en el lote.
         info = cat.get(normalizar(f.get("pactivo_sugerido") or ""))
         comps = info["comp"] if info else []
         press = info["pres"] if info else []
@@ -458,13 +720,9 @@ def revision(hoja: int = 1, msg: str = "", tabla: str = "", tipo: str = "",
             f"<div class=fila-head>"
             f"<input type=checkbox class=marcar name=procesar value='{f['id']}' "
             f"data-row='{n}' checked>"
-            f"<div class=meta>{badge} &nbsp; "
-            f"<b>Licitación {_e(num_lic.get((f['tabla_origen'], f['fila_id'])) or '—')}</b>"
-            f" · {_e(f['tabla_origen'])} #{f['fila_id']} · "
-            f"<span class='badge {'b-baja' if conf < 0.7 else 'b-alta'}'>confianza {conf:.2f}</span>"
-            f"{via}{ent}</div></div>"
+            f"{meta_html}</div>"
             f"<div class=desc>{_e((f.get('descripcion') or '')[:300])}</div>"
-            f"<div class=razon>Claude: {_e(f.get('razon'))}</div>"
+            f"<div class=razon>IA: {_e(f.get('razon'))}</div>"
             + aviso_nuevo
             + f"<input type=hidden name=log_id value='{f['id']}'>"
             f"<div class='linea linea-edicion' data-row='{n}'{linea_oculta}>"
@@ -492,11 +750,16 @@ def revision(hoja: int = 1, msg: str = "", tabla: str = "", tipo: str = "",
     )
     datalist = f"<datalist id=lista_pactivos>{opts}</datalist>"
 
-    qs_base = "&".join(p for p in (f"tabla={tabla}" if tabla else "",
-                                   f"tipo={tipo}" if tipo else "",
-                                   f"metodo={metodo}" if metodo else "",
-                                   f"conf={conf}" if conf else "",
-                                   f"por_hoja={por_hoja}" if por_hoja != POR_HOJA_DEFAULT else "") if p)
+    qs_extras = (f"tabla={tabla}" if tabla else "",
+                 f"tipo={tipo}" if tipo else "",
+                 f"metodo={metodo}" if metodo else "",
+                 f"conf={conf}" if conf else "",
+                 f"rango={rango}" if rango else "",
+                 f"desde={desde}" if desde else "",
+                 f"hasta={hasta}" if hasta else "",
+                 f"estado={estado}" if estado != "pendientes" else "",
+                 f"por_hoja={por_hoja}" if por_hoja != POR_HOJA_DEFAULT else "")
+    qs_base = "&".join(p for p in qs_extras if p)
     qs_base = ("&" + qs_base) if qs_base else ""
     n_hojas = (total + por_hoja - 1) // por_hoja
     pag = "<div class=pag>"
@@ -507,27 +770,44 @@ def revision(hoja: int = 1, msg: str = "", tabla: str = "", tipo: str = "",
         pag += f"<a href='/revision?hoja={hoja+1}{qs_base}'>siguiente »</a>"
     pag += "</div>"
 
-    cuerpo = (
-        f"<h1>Cola de revisión · {total} pendientes</h1>{aviso}{filtros}"
-        f"<form method=post action='/revisar-hoja' id='formhoja'>"
-        f"<input type=hidden name=hoja value='{hoja}'>"
-        f"<input type=hidden name=tabla value='{_e(tabla)}'>"
-        f"<input type=hidden name=tipo value='{_e(tipo)}'>"
-        f"<input type=hidden name=metodo value='{_e(metodo)}'>"
-        f"<input type=hidden name=conf value='{_e(conf)}'>"
-        f"<input type=hidden name=por_hoja value='{por_hoja}'>"
-        "<div class=barra>"
-        "<label>Revisor:</label>"
-        "<input name=revisor placeholder='tu nombre' required>"
-        "<button type=button class=sec onclick='marcarTodos(true)'>Tildar todas</button>"
-        "<button type=button class=sec onclick='marcarTodos(false)'>Destildar todas</button>"
-        "<button type=submit>Aprobar <span id=cuenta>0</span> marcadas</button>"
-        "<span style='font-size:13px;color:#6b7689'>Por default todas vienen "
-        "tildadas; destildá solo las que dudás (quedan pendientes para revisar luego). "
-        "Editar pactivo/comp/pres marca la fila como \"Corregir\" auto.</span>"
-        "</div>"
-        + "".join(bloques) + pag + "</form>" + datalist + _JS
-    )
+    # Solo pendientes muestra form + botones de aprobar. Para revisadas/todas
+    # la vista es de auditoría: lista de lectura con timestamps y veredicto.
+    titulo_h1 = {
+        "pendientes": f"Cola de revisión · {total} pendientes",
+        "revisadas": f"Revisadas · {total} cerradas",
+        "todas": f"Todas las clasificaciones · {total}",
+    }[estado]
+    if estado == "pendientes":
+        cuerpo = (
+            f"<h1>{titulo_h1}</h1>{aviso}{filtros}"
+            f"<form method=post action='/revisar-hoja' id='formhoja'>"
+            f"<input type=hidden name=hoja value='{hoja}'>"
+            f"<input type=hidden name=tabla value='{_e(tabla)}'>"
+            f"<input type=hidden name=tipo value='{_e(tipo)}'>"
+            f"<input type=hidden name=metodo value='{_e(metodo)}'>"
+            f"<input type=hidden name=conf value='{_e(conf)}'>"
+            f"<input type=hidden name=rango value='{_e(rango)}'>"
+            f"<input type=hidden name=desde value='{_e(desde)}'>"
+            f"<input type=hidden name=hasta value='{_e(hasta)}'>"
+            f"<input type=hidden name=por_hoja value='{por_hoja}'>"
+            "<div class=barra>"
+            "<label>Revisor:</label>"
+            "<input name=revisor placeholder='tu nombre' required>"
+            "<button type=button class=sec onclick='marcarTodos(true)'>Tildar todas</button>"
+            "<button type=button class=sec onclick='marcarTodos(false)'>Destildar todas</button>"
+            "<button type=submit>Aprobar <span id=cuenta>0</span> marcadas</button>"
+            "<span style='font-size:13px;color:#6b7689'>Por default todas vienen "
+            "tildadas; destildá solo las que dudás (quedan pendientes para revisar luego). "
+            "Editar pactivo/comp/pres marca la fila como \"Corregir\" auto.</span>"
+            "</div>"
+            + "".join(bloques) + pag + "</form>" + datalist + _JS
+        )
+    else:
+        # Auditoría: sin form ni JS — solo la lista con paginación.
+        cuerpo = (
+            f"<h1>{titulo_h1}</h1>{aviso}{filtros}"
+            + "".join(bloques) + pag
+        )
     return _layout("Cola de revisión", cuerpo)
 
 
