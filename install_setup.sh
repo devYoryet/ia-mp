@@ -40,6 +40,9 @@ ADD_SALUD='0 * * * * /usr/bin/python3 /opt/ia-mp/salud.py >/dev/null 2>>/opt/ia-
 ADD_MON='*/5 * * * * /usr/bin/python3 /opt/ia-mp/monitor_salud.py 2>>/opt/ia-mp/monitor/cron.err'
 ADD_RESTART='0 3 * * * cd /opt/ia-mp && /usr/bin/docker compose restart worker panel backtest 2>>/opt/ia-mp/monitor/restart.log'
 ADD_BACKUP='0 4 * * 0 /usr/bin/rsync -a /opt/ia-mp/modelo_pactivo.joblib root@10.0.0.69:/backup/ia-mp/ 2>>/opt/ia-mp/monitor/backup.log || true'
+# Purga clasificador_ia_backtest > 30d el primer domingo de cada mes a las 04:30.
+# Hace dump comprimido antes (reversible). Ver bin/purgar.sh para el detalle.
+ADD_PURGA='30 4 1-7 * 0 /bin/bash /opt/ia-mp/bin/purgar.sh'
 
 # Greps específicos: "salud.py" sería substring de "monitor_salud.py" y no
 # instalaría el cron horario — usar la ruta completa para evitar la colisión.
@@ -47,17 +50,77 @@ grep -qF "/opt/ia-mp/salud.py" "$TMP" || echo "$ADD_SALUD" >> "$TMP"
 grep -qF "/opt/ia-mp/monitor_salud.py" "$TMP" || echo "$ADD_MON" >> "$TMP"
 grep -qF "docker compose restart" "$TMP" || echo "$ADD_RESTART" >> "$TMP"
 grep -qF "rsync -a /opt/ia-mp/modelo" "$TMP" || echo "$ADD_BACKUP" >> "$TMP"
+grep -qF "/opt/ia-mp/bin/purgar.sh" "$TMP" || echo "$ADD_PURGA" >> "$TMP"
 
 crontab "$TMP"
 rm "$TMP"
 
-# 4) primera corrida del health check — valida que todo esté OK
+# 4) logrotate — los archivos del monitor en disco también necesitan rotación.
+# Sin esto, los .jsonl / .csv crecen sin límite en /opt/ia-mp/monitor/.
+LOGROT=/etc/logrotate.d/clasificador-ia
+cat > "$LOGROT" <<'LOGROT_EOF'
+# Rotación de los archivos del Clasificador IA (instalado por install_setup.sh)
+# Ver bin/purgar.sh para la purga de la tabla clasificador_ia_backtest.
+
+/opt/ia-mp/monitor/salud.csv /opt/ia-mp/monitor/*.log {
+    weekly
+    rotate 8
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 644 root root
+}
+
+/opt/ia-mp/monitor/salud.jsonl {
+    monthly
+    rotate 6
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 644 root root
+}
+
+# ALERTAS se rotan anual y se mantienen 3 años — son auditoría, no las queremos
+# borrar agresivo.
+/opt/ia-mp/monitor/ALERTAS.txt {
+    yearly
+    rotate 3
+    compress
+    missingok
+    notifempty
+    copytruncate
+}
+
+# Stderr de los cron — pueden tener mucho ruido, los rotamos seguido.
+/opt/ia-mp/monitor/*.err {
+    weekly
+    rotate 4
+    compress
+    missingok
+    notifempty
+    create 644 root root
+}
+
+# Backups de la tabla backtest (dumps comprimidos antes de purgar) — los
+# mantenemos 6 meses por si hace falta restaurar para análisis.
+/opt/ia-mp/monitor/backups/*.sql.gz {
+    monthly
+    rotate 6
+    missingok
+    notifempty
+}
+LOGROT_EOF
+echo "→ logrotate configurado en $LOGROT"
+
+# 5) primera corrida del health check — valida que todo esté OK
 echo "→ corrida inicial de salud.py..."
 /usr/bin/python3 /opt/ia-mp/salud.py | head -40
 
 echo
 echo "OK — cron instalado:"
-crontab -l | grep -E "salud|monitor_salud|docker compose restart|rsync"
+crontab -l | grep -E "salud|monitor_salud|docker compose restart|rsync|purgar.sh"
 echo
 echo "Outputs:"
 echo "  /opt/ia-mp/monitor/salud.txt     ← reporte humano-legible más reciente"

@@ -8,6 +8,15 @@
 # La base de datos NO va en contenedor: es el MySQL del servidor clásico
 # (10.0.0.69), al que ambos servicios se conectan según .env.
 
+# Logging driver compartido — json-file con rotación nativa de Docker. Sin esto,
+# los logs de los containers crecen sin límite y se llenan /var/lib/docker. Con
+# max-size=20m y max-file=3 cada container nunca pasa de 60 MB total.
+x-logging: &log
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "3"
+
 services:
   worker:
     build: .
@@ -15,6 +24,7 @@ services:
     command: python worker.py
     env_file: .env
     restart: unless-stopped
+    logging: *log
 
   panel:
     build: .
@@ -36,6 +46,7 @@ services:
     depends_on:
       - worker
     restart: unless-stopped
+    logging: *log
 
   # Backtest CONTINUO en paralelo a producción — corre worker.py en MODO=test:
   # cada INTERVALO_SEGUNDOS agarra LOTE_MAX filas que YA clasificó una persona
@@ -53,3 +64,4 @@ services:
       INTERVALO_SEGUNDOS: "900"   # 15 minutos entre lotes
       LOTE_MAX: "200"              # 200 filas por lote por tabla (400 totales)
     restart: unless-stopped
+    logging: *log
