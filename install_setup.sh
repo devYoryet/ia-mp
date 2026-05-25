@@ -41,8 +41,10 @@ ADD_MON='*/5 * * * * /usr/bin/python3 /opt/ia-mp/monitor_salud.py 2>>/opt/ia-mp/
 ADD_RESTART='0 3 * * * cd /opt/ia-mp && /usr/bin/docker compose restart worker panel backtest 2>>/opt/ia-mp/monitor/restart.log'
 ADD_BACKUP='0 4 * * 0 /usr/bin/rsync -a /opt/ia-mp/modelo_pactivo.joblib root@10.0.0.69:/backup/ia-mp/ 2>>/opt/ia-mp/monitor/backup.log || true'
 
-grep -qF "salud.py" "$TMP" || echo "$ADD_SALUD" >> "$TMP"
-grep -qF "monitor_salud.py" "$TMP" || echo "$ADD_MON" >> "$TMP"
+# Greps específicos: "salud.py" sería substring de "monitor_salud.py" y no
+# instalaría el cron horario — usar la ruta completa para evitar la colisión.
+grep -qF "/opt/ia-mp/salud.py" "$TMP" || echo "$ADD_SALUD" >> "$TMP"
+grep -qF "/opt/ia-mp/monitor_salud.py" "$TMP" || echo "$ADD_MON" >> "$TMP"
 grep -qF "docker compose restart" "$TMP" || echo "$ADD_RESTART" >> "$TMP"
 grep -qF "rsync -a /opt/ia-mp/modelo" "$TMP" || echo "$ADD_BACKUP" >> "$TMP"
 
