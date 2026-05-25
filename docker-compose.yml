@@ -36,3 +36,20 @@ services:
     depends_on:
       - worker
     restart: unless-stopped
+
+  # Backtest CONTINUO en paralelo a producción — corre worker.py en MODO=test:
+  # cada INTERVALO_SEGUNDOS agarra LOTE_MAX filas que YA clasificó una persona
+  # y las pasa por la cascada, midiendo IA vs humano. NO toca producción
+  # (filas_para_backtest excluye Bot/IA_). Comparte la imagen + el .env del
+  # worker, solo cambian MODO/INTERVALO/LOTE. Resultados en `clasificador_ia_backtest`,
+  # visualizables en /comparacion. Ver `entrenar_pactivo.py` y [[resultados-backtest]].
+  backtest:
+    build: .
+    image: clasificador-ia:latest
+    command: python worker.py
+    env_file: .env
+    environment:
+      MODO: test
+      INTERVALO_SEGUNDOS: "900"   # 15 minutos entre lotes
+      LOTE_MAX: "200"              # 200 filas por lote por tabla (400 totales)
+    restart: unless-stopped
