@@ -50,13 +50,17 @@ class Config:
     umbral_modelo_descarte: float = float(os.getenv("UMBRAL_MODELO_DESCARTE", "0.97"))
     # Clasificador multiclase de pactivo: probabilidad mínima del modelo
     # entrenado para auto-asignar un pactivo sin pasar por Claude.
-    # Calibración medida (2026-05-24, modelo SGD directo sin CalibratedCV,
-    # 100 ej/pactivo, 1.593 clases, accuracy top-1 95%):
-    #   umbral 0.40 → cubre 61% del residuo con 99.3% acierto
-    #   umbral 0.50 → cubre 35% con 99.7%
-    # Sin el calibrador externo las probas se concentran bajo (es esperable),
-    # por eso el umbral baja de 0.70 a 0.40. Recalibrar si se cambia el modelo.
-    umbral_modelo_pactivo: float = float(os.getenv("UMBRAL_MODELO_PACTIVO", "0.40"))
+    # Reliability medida en producción (2026-05-25, sobre 16K filas backtest):
+    #   bin proba       n   acc pact
+    #   0.40-0.45     241    96%
+    #   0.45-0.50     162    99%
+    #   0.50-0.55      90    98%
+    #   0.55-0.60      39   100%
+    # El modelo SUB-estima su certeza: con proba 0.40 acierta el 96%, no el 40%.
+    # Bajar el umbral a 0.30 captura más filas con accuracy similar — gratis,
+    # sin re-entrenar. Re-calibrar este número cualquier vez que se cambie el
+    # modelo o se observe drift en los bins de reliability.
+    umbral_modelo_pactivo: float = float(os.getenv("UMBRAL_MODELO_PACTIVO", "0.30"))
     # Top-K pactivos del catálogo, ordenados por palabras de la descripción, que
     # se pasan a Claude como PISTA en el mensaje de usuario. No acota el
     # catálogo (sigue completo en el system prompt). 0 = desactivado.
