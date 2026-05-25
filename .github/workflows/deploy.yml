@@ -1,8 +1,10 @@
 name: deploy a gestor_oc
 
-# Al hacer push a main, se conecta por SSH a gestor_oc, actualiza el repo y
-# reconstruye los contenedores. Requiere estos secrets en el repo (Settings →
-# Secrets and variables → Actions):
+# Al hacer push a main, valida que el código compile y se conecta por SSH a
+# gestor_oc para actualizar el repo y reconstruir los contenedores. Si el
+# compile check falla, NO deploya — protege producción de un push roto.
+#
+# Secrets requeridos (Settings → Secrets and variables → Actions):
 #   GESTOR_OC_HOST  · GESTOR_OC_PORT · GESTOR_OC_USER · GESTOR_OC_SSH_KEY
 on:
   push:
@@ -10,7 +12,26 @@ on:
   workflow_dispatch:
 
 jobs:
+  # PASO 1 — Validar que el código Python compila. Es rápido (~10s) y evita
+  # deployar un push con SyntaxError que rompería el container.
+  validar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: py_compile de todo el .py del repo
+        run: |
+          set -e
+          # Compila todo lo de Python — falla si hay SyntaxError en cualquier archivo.
+          python -m compileall -q .
+          # Sanity de YAML/JSON de configuración crítica.
+          python -c "import yaml; yaml.safe_load(open('docker-compose.yml'))"
+
+  # PASO 2 — Deploy. Solo corre si validar pasó.
   desplegar:
+    needs: validar
     runs-on: ubuntu-latest
     steps:
       - name: SSH a gestor_oc y desplegar
