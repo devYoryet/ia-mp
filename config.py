@@ -49,10 +49,14 @@ class Config:
     # del umbral, la fila sigue a Claude. Conservador a propósito.
     umbral_modelo_descarte: float = float(os.getenv("UMBRAL_MODELO_DESCARTE", "0.97"))
     # Clasificador multiclase de pactivo: probabilidad mínima del modelo
-    # entrenado para auto-asignar un pactivo sin pasar por Claude. Sanity con
-    # 30 ejemplos/pactivo: umbral 0.7 → cubre 84% del residuo con 99% de
-    # acierto. Conservador a propósito; por debajo del umbral, va a Claude.
-    umbral_modelo_pactivo: float = float(os.getenv("UMBRAL_MODELO_PACTIVO", "0.70"))
+    # entrenado para auto-asignar un pactivo sin pasar por Claude.
+    # Calibración medida (2026-05-24, modelo SGD directo sin CalibratedCV,
+    # 100 ej/pactivo, 1.593 clases, accuracy top-1 95%):
+    #   umbral 0.40 → cubre 61% del residuo con 99.3% acierto
+    #   umbral 0.50 → cubre 35% con 99.7%
+    # Sin el calibrador externo las probas se concentran bajo (es esperable),
+    # por eso el umbral baja de 0.70 a 0.40. Recalibrar si se cambia el modelo.
+    umbral_modelo_pactivo: float = float(os.getenv("UMBRAL_MODELO_PACTIVO", "0.40"))
     # Top-K pactivos del catálogo, ordenados por palabras de la descripción, que
     # se pasan a Claude como PISTA en el mensaje de usuario. No acota el
     # catálogo (sigue completo en el system prompt). 0 = desactivado.
