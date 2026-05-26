@@ -577,20 +577,48 @@ _IA_EXTRAS_COLS = [
 ]
 
 
-@app.get("/revision.csv")
-def revision_csv(tabla: str = "", tipo: str = "", metodo: str = "", conf: str = "",
-                 rango: str = "ayer_hoy", desde: str = "", hasta: str = "",
-                 estado: str = "pendientes", busqueda: str = "",
-                 licitacion: str = ""):
-    """Export estilo LEGACY gestor_licitaciones — mismas columnas que el equipo
-    ya conoce. Para tabla=compra_agil exporta las 28 columnas del legacy + 12
-    columnas IA. Para tabla=Licitaciones_diarias, las 28 del legacy de licit +
-    IA. Si tabla está vacío, exporta compra_agil (más común) — el usuario
-    cambia el filtro de tabla para licitaciones.
+# Anchos de columna sugeridos para el XLSX (en unidades de Excel — ~ ancho
+# en caracteres). Replican el legacy y dan espacio a campos largos como
+# Descripción y Razón. Si el header no figura, se usa el default (15).
+_ANCHO_XLSX = {
+    "Demandante": 38, "Unidad de compra": 30, "Región": 14, "Comuna": 16,
+    "Fecha Publicación": 18, "Fecha Cierre": 18, "Unidades": 10, "Medida": 12,
+    "Descripción": 60, "Producto o Servicio a contratar": 35,
+    "Licitación": 22, "Item": 16, "Descripción PHT": 50, "Rut Cliente": 14,
+    "Duración Contrato": 16, "Precio Ponderación": 15, "Tiempo del contrato": 18,
+    "Garantía seriedad ofertas": 18, "Garantía seriedad contrato": 18,
+    "Pactivo": 26, "Composición": 18, "Presentación": 18,
+    "Nombre del Contacto": 22, "Teléfono de contacto": 16, "Mail de contacto": 28,
+    "Monto Total": 14, "Estado gestor": 12, "Usuario": 22,
+    "Fecha inicio pregunta": 18, "Fecha fin pregunta": 18, "Cod Onu": 14,
+    "Fecha Adjudicación": 18,
+    "IA · Tipo": 14, "IA · Pactivo sugerido": 26, "IA · Composición": 16,
+    "IA · Presentación": 18, "IA · Vía (etapa)": 22, "IA · Confianza": 12,
+    "IA · Razón": 55, "IA · Pactivo Nuevo": 22, "IA · Revisada": 10,
+    "IA · Revisor": 22, "IA · Fecha revisión": 18, "IA · Acierto humano": 14,
+}
 
-    CSV con BOM UTF-8, delimiter `;` — listo para abrir en Excel ES."""
-    import csv as _csv, io as _io
+
+@app.get("/revision.xlsx")
+def revision_xlsx(tabla: str = "", tipo: str = "", metodo: str = "", conf: str = "",
+                  rango: str = "ayer_hoy", desde: str = "", hasta: str = "",
+                  estado: str = "pendientes", busqueda: str = "",
+                  licitacion: str = ""):
+    """Export ESTILO LEGACY como XLSX con formato — replica el Excel del
+    gestor_licitaciones (CompraAgilController->generarExcelCa /
+    LicitacionesDiariasController->generarExcelClasificacion).
+
+    Hereda: 28 columnas del legacy + 12 columnas IA al final.
+    Agrega: header azul corporativo, autofilter, freeze del row 1, anchos
+    fijos por columna, wrap text para descripciones, pintado por estado
+    (verde=interés, rojo=descarte, gris=pendiente) — mismo que el legacy.
+
+    Si la tabla no se filtra, default a compra_agil (más común)."""
+    from io import BytesIO
     from fastapi.responses import StreamingResponse
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
 
     estado = estado if estado in _ESTADOS else "pendientes"
     if rango == "todas":
@@ -647,43 +675,64 @@ def revision_csv(tabla: str = "", tipo: str = "", metodo: str = "", conf: str = 
     )
     filas = _query(sql, tuple(args))
 
-    buf = _io.StringIO()
-    buf.write("﻿")  # BOM para Excel ES
-    w = _csv.writer(buf, delimiter=";", quoting=_csv.QUOTE_MINIMAL)
-    # Header: legacy + IA extras
-    w.writerow([h for h, _ in cols_def] + _IA_EXTRAS_COLS)
+    # ----- Construir XLSX con openpyxl -----
+    wb = Workbook()
+    ws = wb.active
+    ws.title = tabla_export[:30]  # límite XLSX
+
+    headers = [h for h, _ in cols_def] + _IA_EXTRAS_COLS
+
+    # Estilos
+    hdr_font = Font(bold=True, color="FFFFFF", size=11)
+    hdr_fill = PatternFill("solid", fgColor="4281C2")
+    hdr_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    fill_interes = PatternFill("solid", fgColor="BBDFB9")
+    fill_descarte = PatternFill("solid", fgColor="FFBABA")
+    fill_pendiente = PatternFill("solid", fgColor="E9E9E9")
+    cell_align = Alignment(vertical="top", wrap_text=True)
+
+    # Header
+    for col_idx, h in enumerate(headers, 1):
+        c = ws.cell(row=1, column=col_idx, value=h)
+        c.font = hdr_font
+        c.fill = hdr_fill
+        c.alignment = hdr_align
+    ws.row_dimensions[1].height = 32
+
+    # Anchos de columna
+    for col_idx, h in enumerate(headers, 1):
+        w = _ANCHO_XLSX.get(h, 15)
+        ws.column_dimensions[get_column_letter(col_idx)].width = w
 
     def _fmt(v):
-        """Limpia para CSV: quita newlines, convierte a str."""
         if v is None:
             return ""
         if isinstance(v, datetime):
             return v.strftime("%Y-%m-%d %H:%M")
-        s = str(v)
-        return s.replace("\n", " ").replace("\r", " ")
+        return v
 
     def _estado_legible(v):
         return {1: "interés", 0: "descarte"}.get(v, "pendiente")
 
-    for f in filas:
-        # Fila legacy: misma data que el Excel del gestor_licitaciones
-        row = [_fmt(f.get(sql_col)) for _, sql_col in cols_def]
-        # Sobrescribir "Estado gestor" con valor legible
+    # Filas — replicando el coloreo del legacy por estado_gestor
+    for row_idx, f in enumerate(filas, start=2):
+        row_values = [_fmt(f.get(sql_col)) for _, sql_col in cols_def]
+        # Estado gestor legible
         for i, (_, sql_col) in enumerate(cols_def):
             if sql_col == "estado_gestor":
-                row[i] = _estado_legible(f.get("estado_gestor"))
-        # Extras de IA
+                row_values[i] = _estado_legible(f.get("estado_gestor"))
+        # IA extras
         tipo_ia = "INTERÉS" if f.get("ia_int") == 1 else "descarte"
         if (f.get("ia_pactivo_nuevo") or "").strip():
             tipo_ia = "PACTIVO NUEVO"
         revisada = bool(f.get("ia_revisado"))
-        row += [
+        row_values += [
             tipo_ia,
             _fmt(f.get("ia_pact")),
             _fmt(f.get("ia_comp")),
             _fmt(f.get("ia_pres")),
-            _METODOS.get(f.get("ia_metodo"), _fmt(f.get("ia_metodo"))),
-            f"{float(f.get('ia_conf') or 0):.2f}",
+            _METODOS.get(f.get("ia_metodo"), f.get("ia_metodo") or ""),
+            round(float(f.get("ia_conf") or 0), 2),
             _fmt(f.get("ia_razon")),
             _fmt(f.get("ia_pactivo_nuevo")),
             "sí" if revisada else "no",
@@ -691,12 +740,28 @@ def revision_csv(tabla: str = "", tipo: str = "", metodo: str = "", conf: str = 
             _fmt(f.get("ia_revisado_en")),
             ("sí" if f.get("ia_correcto") == 1 else "no") if revisada else "",
         ]
-        w.writerow(row)
+        # Pintar la fila según estado_gestor (igual que el legacy)
+        est = f.get("estado_gestor")
+        row_fill = (fill_interes if est == 1 else
+                    fill_descarte if est == 0 else fill_pendiente)
+        for col_idx, v in enumerate(row_values, 1):
+            c = ws.cell(row=row_idx, column=col_idx, value=v)
+            c.fill = row_fill
+            c.alignment = cell_align
+
+    # Freeze + autofilter
+    ws.freeze_panes = "A2"
+    if filas:
+        ws.auto_filter.ref = ws.dimensions
+
+    # Guardar a BytesIO
+    buf = BytesIO()
+    wb.save(buf)
     buf.seek(0)
-    nombre = f"{tabla_export}-{datetime.now():%Y%m%d-%H%M}.csv"
+    nombre = f"{tabla_export}-{datetime.now():%Y%m%d-%H%M}.xlsx"
     return StreamingResponse(
         iter([buf.getvalue()]),
-        media_type="text/csv; charset=utf-8",
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{nombre}"'},
     )
 
@@ -994,7 +1059,7 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
         f"<input type=text name=licitacion value='{_e(licitacion)}' "
         f"placeholder='ej. 5523-145-L226' style='width:200px'>"
         "<button type=submit class=sec>buscar</button>"
-        f"&nbsp;<a class=btn-excel href='/revision.csv?{_e(csv_qs)}'>📥 Excel (CSV)</a>"
+        f"&nbsp;<a class=btn-excel href='/revision.xlsx?{_e(csv_qs)}'>📥 Excel (XLSX)</a>"
         "</div>"
         # ---- línea 4: Confianza · Vía · Por hoja
         "<div class=fila-filt>"
