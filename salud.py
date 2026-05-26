@@ -61,6 +61,13 @@ BUDGET_TOTAL = float(_ENV.get("BUDGET_USD", "350"))
 # Presupuesto reservado para el experimento de backtest paralelo de 7 días.
 # Se compara contra el costo neto últimos 7d (test + ajuste, excluye prod).
 BUDGET_BACKTEST = float(_ENV.get("BUDGET_BACKTEST_USD", "65"))
+# Umbrales diarios de PRODUCCIÓN — alerta + crítica. Proyectados a mes:
+#   $12/día × 30 = $360/mes  → al filo del presupuesto, ALERTA
+#   $20/día × 30 = $600/mes  → fuera de control, ALERTA CRÍTICA (no apaga prod
+#                              automáticamente: producción es producción, lo
+#                              decide el humano viendo el contexto)
+PROD_24H_ALERTA = float(_ENV.get("PROD_24H_ALERTA_USD", "12"))
+PROD_24H_CRITICA = float(_ENV.get("PROD_24H_CRITICA_USD", "20"))
 
 
 # --- Helpers ---------------------------------------------------------------
@@ -206,6 +213,14 @@ def metricas_costo() -> dict:
         "SELECT IFNULL(SUM(costo_usd),0) c FROM clasificador_ia_costos "
         "WHERE creado_en >= NOW() - INTERVAL 7 DAY AND contexto = 'produccion'"
     )[0]["c"])
+    # Patrón horario producción últimas 24h — para ver de un vistazo si hubo
+    # un pico fuera de horario laboral (8-22h es lo normal).
+    out["por_hora_prod_24h"] = _query(
+        "SELECT DATE_FORMAT(creado_en,'%H') h, COUNT(*) n, "
+        "ROUND(SUM(costo_usd),3) c FROM clasificador_ia_costos "
+        "WHERE creado_en >= NOW() - INTERVAL 24 HOUR AND contexto='produccion' "
+        "GROUP BY h ORDER BY h"
+    )
     return out
 
 
@@ -240,8 +255,11 @@ def evaluar(snap: dict) -> list[str]:
     h = snap["host"]
     if h["mem_available_mb"] < 800:
         alertas.append(f"RAM available CRÍTICA: {h['mem_available_mb']} MB (umbral 800)")
-    if h["swap_used_mb"] > 1500:
-        alertas.append(f"Swap alto: {h['swap_used_mb']} MB (umbral 1500)")
+    # Umbral swap 2500 MB — con 3 containers + modelo de pactivo en RAM (~700MB
+    # cada uno) y el caché de queries de MySQL, un poco de swap es esperable. La
+    # señal de problema es swap CRECIENDO sin parar, no el valor absoluto.
+    if h["swap_used_mb"] > 2500:
+        alertas.append(f"Swap alto: {h['swap_used_mb']} MB (umbral 2500)")
     if h["disk_root_pct"] > 85:
         alertas.append(f"Disco /: {h['disk_root_pct']}% (umbral 85%)")
     if h["load_per_core"] > 2.5:
@@ -264,6 +282,21 @@ def evaluar(snap: dict) -> list[str]:
         alertas.append(
             f"COSTO BACKTEST 7d: ${costo_test_7d:.2f} > presupuesto ${BUDGET_BACKTEST} "
             f"→ se va a parar el container backtest"
+        )
+
+    # Vigilancia de PRODUCCIÓN — alerta (no apaga). Producción la decide el
+    # humano, no un script automático. Pero queremos enterarnos rápido si
+    # algo se descarrila.
+    costo_prod_24h = snap["costo"]["ult_24h_prod"]
+    if costo_prod_24h > PROD_24H_CRITICA:
+        alertas.append(
+            f"COSTO PRODUCCIÓN 24h: ${costo_prod_24h:.2f} > CRÍTICO ${PROD_24H_CRITICA} "
+            f"(proyección ${costo_prod_24h * 30:.0f}/mes — fuera de presupuesto)"
+        )
+    elif costo_prod_24h > PROD_24H_ALERTA:
+        alertas.append(
+            f"Producción 24h: ${costo_prod_24h:.2f} > alerta ${PROD_24H_ALERTA} "
+            f"(proyección ${costo_prod_24h * 30:.0f}/mes — al filo del presupuesto)"
         )
 
     # drift accuracy: si últimas 24h - 7d < -3pt, algo viene peor
@@ -351,8 +384,17 @@ def render(snap: dict, alertas: list[str]) -> str:
     out.append(f"  Acumulado total      : ${costo['acumulado']:.2f} / ${BUDGET_TOTAL} mensual")
     out.append(f"  Backtest últimos 24h : ${costo['ult_24h_test']:.2f}")
     out.append(f"  Backtest últimos 7d  : ${costo['ult_7d_test']:.2f} / ${BUDGET_BACKTEST} reservado")
-    out.append(f"  Producción últimos 24h: ${costo['ult_24h_prod']:.2f}")
+    out.append(f"  Producción últimos 24h: ${costo['ult_24h_prod']:.2f}  "
+               f"(proyección ${costo['ult_24h_prod']*30:.0f}/mes vs ${BUDGET_TOTAL:.0f})")
     out.append(f"  Producción últimos 7d : ${costo['ult_7d_prod']:.2f}")
+    # Patrón horario: muestra si el costo de prod se concentró fuera de horario
+    # laboral (sospechoso) o respeta el ciclo 8-22h del scraping (normal).
+    if costo.get("por_hora_prod_24h"):
+        out.append("  Producción por hora (24h, solo horas con actividad):")
+        for r in costo["por_hora_prod_24h"]:
+            if (r.get('n') or 0) == 0:
+                continue
+            out.append(f"    {r['h']}h  {r['n']:>4} calls  ${float(r['c'] or 0):.3f}")
     out.append("")
 
     out.append("PRODUCCIÓN")
