@@ -13,6 +13,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+from catalogo_activo import WHITELIST, construir_filtro_activo
 from config import config
 from db import conexion_worker
 from reglas import normalizar, normalizar_valor
@@ -138,21 +139,45 @@ def cargar_taxonomia() -> Taxonomia:
             _registrar(f["p"], f["c"], f["m"])
 
         # 2) catálogo SECUNDARIO — diccionario de clasificación (el mismo del
-        #    legacy); aporta solo los pactivos que NO están en el primario.
+        #    legacy); aporta solo los pactivos que NO están en el primario, Y
+        #    que aparezcan en al menos un cliente ACTIVO (o estén en la
+        #    whitelist de meta-pactivos como "Adjunto"). El cruce con
+        #    pharmatender.company (prime) + principal_app.diccionario_unidad
+        #    se hace en `catalogo_activo.construir_filtro_activo()`.
+        filtro_activo = construir_filtro_activo()
         dic = config.db_diccionario
         cur.execute(
             f"SELECT DISTINCT pactivo AS p, comp AS c, presentacion AS m "
             f"FROM `{dic}`.diccionario WHERE pactivo IS NOT NULL AND pactivo <> ''"
         )
+        whitelist_norm = {normalizar(p) for p in WHITELIST}
+        n_descartados = 0
         for f in cur.fetchall():
-            if normalizar(f["p"]) in primarios:
+            pn = normalizar(f["p"])
+            if pn in primarios:
+                # ya está en 0001_td_oc.Base (sagrado) — pero el dicc puede
+                # aportar otra combinación de comp/pres, igual la registramos.
+                _registrar(f["p"], f["c"], f["m"])
+                continue
+            # delta: solo si está en filtro_activo o whitelist
+            if filtro_activo is not None and pn not in filtro_activo and pn not in whitelist_norm:
+                n_descartados += 1
                 continue
             _registrar(f["p"], f["c"], f["m"])
 
-    return Taxonomia(
+    # Construye Taxonomia y reporta el efecto del filtro
+    tax = Taxonomia(
         pactivos=sorted(pactivos),
         composiciones=sorted(set(comp_index.values())),
         presentaciones=sorted(set(pres_index.values())),
         comp_index=comp_index,
         pres_index=pres_index,
     )
+    if filtro_activo is not None:
+        import logging
+        logging.getLogger("taxonomia").info(
+            "Filtro de clientes activos aplicado: %d pactivos descartados del delta. "
+            "Catálogo final: %d pactivos.",
+            n_descartados, len(tax.pactivos),
+        )
+    return tax

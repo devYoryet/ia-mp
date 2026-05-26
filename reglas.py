@@ -20,9 +20,21 @@ def normalizar(texto: str | None) -> str:
     return re.sub(r"\s+", " ", sin_tildes.lower()).strip()
 
 
+# Meta-pactivos que NO deben ser matcheados por `match_diccionario` (palabra
+# suelta sin contexto). Su asignación es CONTEXTUAL — solo Claude tiene la
+# glosa completa + VINCULOS para decidir si aplica. Medido en producción
+# (2026-05-26): regla_diccionario matcheaba "Adjunto" como palabra suelta y
+# generaba 162 FP / 5 TP en 3 días (97% falso positivo). Mover a Claude:
+# 99.7% de los Adjuntos asignados por humano fueron interés correcto.
+PACTIVOS_NO_MATCH_DIRECTO = {"Adjunto"}
+
+
 def indexar_pactivos(pactivos: list[str]) -> dict[str, str]:
-    """{pactivo_normalizado: pactivo_original} para el match exacto."""
-    return {normalizar(p): p for p in pactivos}
+    """{pactivo_normalizado: pactivo_original} para el match exacto. Excluye
+    los meta-pactivos de `PACTIVOS_NO_MATCH_DIRECTO` — esos solo los puede
+    asignar Claude con contexto."""
+    bl = {normalizar(p) for p in PACTIVOS_NO_MATCH_DIRECTO}
+    return {normalizar(p): p for p in pactivos if normalizar(p) not in bl}
 
 
 def normalizar_valor(texto: str | None) -> str:

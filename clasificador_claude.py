@@ -50,6 +50,17 @@ o insumo médico real, pero NINGÚN pactivo de la lista controlada le correspond
 marca pactivo_fuera_de_lista = 1 y escribe en pactivo_propuesto el nombre del \
 pactivo que debería existir. Es un hallazgo para que un humano lo agregue a la \
 lista. En ese caso deja pactivo en null.
+5. **PACTIVO ESPECIAL "Adjunto"** — es un meta-pactivo que indica que el LISTADO \
+REAL de productos está en un archivo anexo (no aparece desglosado en la \
+Descripción/Título). Usá `pactivo = "Adjunto"` SOLO cuando el texto sugiere \
+claramente que el adjunto contiene productos FARMA (medicamentos, insumos \
+médicos, insumos clínicos, dentales, hospitalarios, veterinarios farma). \
+Señales típicas: "lista de medicamentos en anexo", "insumos farmacológicos en \
+documento adjunto", "productos clínicos según especificaciones técnicas \
+adjuntas", "kit médico detalle en anexo", "fármacos según bases técnicas". \
+DESCARTÁ (interes=0) los adjuntos que claramente NO son farma: ropa, uniformes, \
+gastronomía, librería, construcción, mobiliario, equipos no-médicos, deportivos, \
+veterinarios de alimentación, etc. — aunque digan "adjunto" / "anexo".
 
 Reglas:
 - DESCRIPCIONES POBRES: si la descripción es un código, está incompleta o solo \

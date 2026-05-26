@@ -29,6 +29,7 @@ import descarte_modelo
 import modelo_pactivo as mp
 import preclasificador
 import reglas
+from reglas import PACTIVOS_NO_MATCH_DIRECTO, normalizar
 from config import config
 from descarte_items import COLUMNA_RUBRO
 from taxonomia import Taxonomia
@@ -199,7 +200,12 @@ def clasificar_fila(
     # Si está MUY seguro, asigna pactivo + (comp,pres) desde el histórico real
     # del pactivo; si no llega al umbral, la fila sigue a Claude.
     pact_pred, conf = mp.predecir(modelo_pactivo, descripcion)
-    if pact_pred and conf >= config.umbral_modelo_pactivo:
+    # Si el modelo predice un meta-pactivo (Adjunto), lo ignoramos: su
+    # asignación es contextual y solo Claude la decide. Igualmente si la
+    # clase predicha no está en el catálogo activo de hoy (cliente desactivó).
+    if (pact_pred and conf >= config.umbral_modelo_pactivo
+            and normalizar(pact_pred) not in {normalizar(p) for p in PACTIVOS_NO_MATCH_DIRECTO}
+            and normalizar(pact_pred) in pactivos_norm):
         comp_g, pres_g = taxonomia.extraer_de_glosa(texto)
         comp_o, pres_o = preclasificador.elegir_comp_pres_por_descripcion(
             tabla, pact_pred, descripcion
