@@ -133,6 +133,23 @@ input[type=date], input[type=text] { padding: 4px 8px; border: 1px solid #cdd5e0
              letter-spacing: 0.2px; }
 .grupo-hdr .grupo-n { color: #b9c6d6; font-weight: 400; font-size: 13px; margin-left: 8px; }
 
+/* Form de filtros de /revision — selects en lugar de chips horizontales.
+   Submitea on-change para feedback inmediato sin pulsar botón. */
+.ff { background: #fff; border-radius: 10px; padding: 14px 18px; margin: 8px 0 18px;
+      box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+.fila-filt { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+             font-size: 13px; margin-bottom: 8px; }
+.fila-filt:last-child { margin-bottom: 0; }
+.fila-filt label { color: #6b7689; font-weight: 600; }
+.fila-filt select, .fila-filt input[type=text], .fila-filt input[type=date] {
+    padding: 5px 10px; border: 1px solid #cdd5e0; border-radius: 6px;
+    font-size: 13px; background: #fff; }
+.fila-filt select { cursor: pointer; min-width: 130px; }
+.fila-filt button { padding: 5px 12px; font-size: 13px; }
+.btn-excel { text-decoration: none; padding: 5px 12px; border: 1px solid #cdd5e0;
+             border-radius: 6px; background: #fff; color: #1d2330; font-size: 13px; }
+.btn-excel:hover { background: #f3f6fa; }
+
 /* /comparacion — cross matrix de humano vs IA */
 .matriz { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px;
           margin: 12px 0 24px; }

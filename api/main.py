@@ -849,94 +849,87 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
         cls = " class=on" if activo else ""
         return f"<a href='/revision?{qs}'{cls}>{etiqueta}</a>"
 
+    # Filtros: una sola <form> con <select>+inputs. Cada select submitea on
+    # change. Mucho más limpio que la pared de links anterior. Los selects
+    # tienen typeahead nativo del navegador — si la lista es larga (Vía: 8
+    # opciones), apretar la primera letra salta a la opción.
+    def opt(value: str, label: str, current) -> str:
+        sel = " selected" if str(value) == str(current) else ""
+        return f'<option value="{_e(value)}"{sel}>{_e(label)}</option>'
+
+    csv_qs = qs_extras_str(tabla, tipo, metodo, conf, rango, desde, hasta,
+                            estado, busqueda, licitacion)
+
     filtros = (
-        "<div class=filtros><b>Estado:</b>"
-        + filtro_link("estado", "", "pendientes", estado == "pendientes")
-        + filtro_link("estado", "revisadas", "revisadas", estado == "revisadas")
-        + filtro_link("estado", "todas", "todas", estado == "todas")
-        + " &nbsp; <b>Tabla:</b>"
-        + filtro_link("tabla", "", "todas", not tabla)
-        + filtro_link("tabla", "compra_agil", "compra ágil", tabla == "compra_agil")
-        + filtro_link("tabla", "Licitaciones_diarias", "licitaciones",
-                      tabla == "Licitaciones_diarias")
-        + " &nbsp; <b>Tipo:</b>"
-        + filtro_link("tipo", "", "todos", not tipo)
-        + filtro_link("tipo", "interes", "interés", tipo == "interes")
-        + filtro_link("tipo", "descarte", "descarte", tipo == "descarte")
-        + filtro_link("tipo", "nuevo", "pactivo nuevo", tipo == "nuevo")
-        + "</div>"
-        + "<div class=filtros><b>Fecha:</b>"
-        + filtro_link("rango", "ayer_hoy", "ayer + hoy", rango == "ayer_hoy")
-        + filtro_link("rango", "hoy", "solo hoy", rango == "hoy")
-        + filtro_link("rango", "ayer", "solo ayer", rango == "ayer")
-        + filtro_link("rango", "semana", "última semana", rango == "semana")
-        + filtro_link("rango", "mes", "último mes", rango == "mes")
-        + filtro_link("rango", "todas", "todas", not rango and not desde and not hasta)
-        + (
-            f" &nbsp; <form method=get action='/revision' style='display:inline;font-size:13px'>"
-            f"<input type=hidden name=estado value='{_e(estado)}'>"
-            f"<input type=hidden name=tabla value='{_e(tabla)}'>"
-            f"<input type=hidden name=tipo value='{_e(tipo)}'>"
-            f"<input type=hidden name=metodo value='{_e(metodo)}'>"
-            f"<input type=hidden name=conf value='{_e(conf)}'>"
-            f"<input type=hidden name=por_hoja value='{por_hoja}'>"
-            f"<input type=hidden name=busqueda value='{_e(busqueda)}'>"
-            f"<input type=hidden name=licitacion value='{_e(licitacion)}'>"
-            f"<input type=date name=desde value='{_e(desde)}'>"
-            f"&nbsp;a&nbsp;<input type=date name=hasta value='{_e(hasta)}'>"
-            f"&nbsp;<button type=submit class=sec style='padding:4px 10px'>aplicar</button>"
-            f"</form>"
-        )
-        + "</div>"
-        # Búsqueda libre + por número de licitación: forms independientes
-        + (
-            f"<div class=filtros><b>Buscar:</b>"
-            f"<form method=get action='/revision' style='display:inline;font-size:13px'>"
-            f"<input type=hidden name=estado value='{_e(estado)}'>"
-            f"<input type=hidden name=tabla value='{_e(tabla)}'>"
-            f"<input type=hidden name=tipo value='{_e(tipo)}'>"
-            f"<input type=hidden name=metodo value='{_e(metodo)}'>"
-            f"<input type=hidden name=conf value='{_e(conf)}'>"
-            f"<input type=hidden name=rango value='{_e(rango)}'>"
-            f"<input type=hidden name=desde value='{_e(desde)}'>"
-            f"<input type=hidden name=hasta value='{_e(hasta)}'>"
-            f"<input type=hidden name=por_hoja value='{por_hoja}'>"
-            f"<input type=hidden name=licitacion value='{_e(licitacion)}'>"
-            f"<input type=text name=busqueda value='{_e(busqueda)}' placeholder='palabra en la glosa…' style='width:240px'>"
-            f"&nbsp;<button type=submit class=sec style='padding:4px 10px'>buscar</button>"
-            f"</form>"
-            f"&nbsp;&nbsp;<b>N° licitación / compra:</b>"
-            f"<form method=get action='/revision' style='display:inline;font-size:13px'>"
-            f"<input type=hidden name=estado value='{_e(estado)}'>"
-            f"<input type=hidden name=tabla value='{_e(tabla)}'>"
-            f"<input type=hidden name=tipo value='{_e(tipo)}'>"
-            f"<input type=hidden name=metodo value='{_e(metodo)}'>"
-            f"<input type=hidden name=conf value='{_e(conf)}'>"
-            f"<input type=hidden name=rango value='{_e(rango)}'>"
-            f"<input type=hidden name=desde value='{_e(desde)}'>"
-            f"<input type=hidden name=hasta value='{_e(hasta)}'>"
-            f"<input type=hidden name=por_hoja value='{por_hoja}'>"
-            f"<input type=hidden name=busqueda value='{_e(busqueda)}'>"
-            f"<input type=text name=licitacion value='{_e(licitacion)}' placeholder='ej. 5523-145-L226' style='width:200px'>"
-            f"&nbsp;<button type=submit class=sec style='padding:4px 10px'>ir</button>"
-            f"</form>"
-            f"&nbsp;&nbsp;<a class=sec href='/revision.csv?{_e(qs_extras_str(tabla,tipo,metodo,conf,rango,desde,hasta,estado,busqueda,licitacion))}' style='text-decoration:none;padding:4px 10px;border:1px solid #cdd5e0;border-radius:6px;background:#fff;color:#1d2330;font-size:13px'>📥 Excel (CSV)</a>"
-            f"</div>"
-        )
-        + "<div class=filtros><b>Confianza:</b>"
-        + filtro_link("conf", "", "toda", not conf)
-        + filtro_link("conf", "baja", "&lt; 0.70 (duda)", conf == "baja")
-        + filtro_link("conf", "media", "0.70-0.85", conf == "media")
-        + filtro_link("conf", "alta", "≥ 0.85 (segura)", conf == "alta")
-        + " &nbsp; <b>Vía:</b>"
-        + filtro_link("metodo", "", "todas", not metodo)
-        + "".join(filtro_link("metodo", k, v, metodo == k) for k, v in _METODOS.items())
-        + "</div>"
-        + "<div class=filtros><b>Por hoja:</b>"
-        + "".join(filtro_link("por_hoja", str(n) if n != POR_HOJA_DEFAULT else "",
-                              str(n), por_hoja == n)
-                  for n in POR_HOJA_OPCIONES)
-        + "</div>"
+        f"<form method=get action='/revision' class=ff>"
+        # ---- línea 1: Estado · Tabla · Tipo
+        "<div class=fila-filt>"
+        "<label>Estado</label>"
+        f"<select name=estado onchange='this.form.submit()'>"
+        + opt("pendientes", "pendientes", estado)
+        + opt("revisadas", "revisadas", estado)
+        + opt("todas", "todas", estado)
+        + "</select>"
+        "<label>Tabla</label>"
+        f"<select name=tabla onchange='this.form.submit()'>"
+        + opt("", "todas", tabla)
+        + opt("compra_agil", "compra ágil", tabla)
+        + opt("Licitaciones_diarias", "licitaciones", tabla)
+        + "</select>"
+        "<label>Tipo</label>"
+        f"<select name=tipo onchange='this.form.submit()'>"
+        + opt("", "todos", tipo)
+        + opt("interes", "interés", tipo)
+        + opt("descarte", "descarte", tipo)
+        + opt("nuevo", "pactivo nuevo", tipo)
+        + "</select>"
+        "</div>"
+        # ---- línea 2: Fecha (preset + rango)
+        "<div class=fila-filt>"
+        "<label>Fecha</label>"
+        f"<select name=rango onchange='this.form.submit()'>"
+        + opt("ayer_hoy", "ayer + hoy", rango)
+        + opt("hoy", "solo hoy", rango)
+        + opt("ayer", "solo ayer", rango)
+        + opt("semana", "última semana", rango)
+        + opt("mes", "último mes", rango)
+        + opt("todas", "todas", rango if rango else "todas")
+        + "</select>"
+        f"<label>desde</label><input type=date name=desde value='{_e(desde)}'>"
+        f"<label>hasta</label><input type=date name=hasta value='{_e(hasta)}'>"
+        "<button type=submit class=sec>aplicar fechas</button>"
+        "</div>"
+        # ---- línea 3: Buscar (texto) · N° licitación · Excel
+        "<div class=fila-filt>"
+        "<label>Buscar</label>"
+        f"<input type=text name=busqueda value='{_e(busqueda)}' "
+        f"placeholder='palabra en la glosa…' style='width:240px'>"
+        "<label>N° licit/compra</label>"
+        f"<input type=text name=licitacion value='{_e(licitacion)}' "
+        f"placeholder='ej. 5523-145-L226' style='width:200px'>"
+        "<button type=submit class=sec>buscar</button>"
+        f"&nbsp;<a class=btn-excel href='/revision.csv?{_e(csv_qs)}'>📥 Excel (CSV)</a>"
+        "</div>"
+        # ---- línea 4: Confianza · Vía · Por hoja
+        "<div class=fila-filt>"
+        "<label>Confianza</label>"
+        f"<select name=conf onchange='this.form.submit()'>"
+        + opt("", "toda", conf)
+        + opt("baja", "< 0.70 (duda)", conf)
+        + opt("media", "0.70 - 0.85", conf)
+        + opt("alta", "≥ 0.85 (segura)", conf)
+        + "</select>"
+        "<label>Vía</label>"
+        f"<select name=metodo onchange='this.form.submit()'>"
+        + opt("", "todas", metodo)
+        + "".join(opt(k, v, metodo) for k, v in _METODOS.items())
+        + "</select>"
+        "<label>Por hoja</label>"
+        f"<select name=por_hoja onchange='this.form.submit()'>"
+        + "".join(opt(str(n), str(n), str(por_hoja)) for n in POR_HOJA_OPCIONES)
+        + "</select>"
+        "</div>"
+        "</form>"
     )
 
     if not total:
