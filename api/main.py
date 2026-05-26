@@ -501,6 +501,131 @@ _TIPOS = {
     "nuevo": "pactivo_nuevo IS NOT NULL AND pactivo_nuevo<>''",
 }
 
+@app.get("/revision.csv")
+def revision_csv(tabla: str = "", tipo: str = "", metodo: str = "", conf: str = "",
+                 rango: str = "ayer_hoy", desde: str = "", hasta: str = "",
+                 estado: str = "pendientes", busqueda: str = "",
+                 licitacion: str = ""):
+    """Export Excel-friendly (CSV con BOM, semicolon, UTF-8) de las filas que
+    coinciden con el filtro actual de /revision. SIN paginar — exporta todas.
+
+    Usado para análisis offline o auditoría. Las columnas son las mismas que
+    el revisor ve en pantalla + N° licitación + fecha — sin metadata interna
+    del modelo. Para data cruda usar SQL directo sobre clasificador_ia_log."""
+    import csv as _csv, io as _io
+    from fastapi.responses import StreamingResponse
+
+    estado = estado if estado in _ESTADOS else "pendientes"
+    if rango == "todas":
+        rango = ""
+    cond = [_ESTADOS[estado]]
+    args: list = []
+    if tabla in TABLAS_VALIDAS:
+        cond.append("tabla_origen=%s"); args.append(tabla)
+    if tipo in _TIPOS:
+        cond.append(_TIPOS[tipo])
+    if metodo in _METODOS:
+        cond.append("metodo=%s"); args.append(metodo)
+    if conf == "baja":
+        cond.append("confianza < 0.7")
+    elif conf == "media":
+        cond.append("confianza >= 0.7 AND confianza < 0.85")
+    elif conf == "alta":
+        cond.append("confianza >= 0.85")
+    if rango in _RANGOS:
+        cond.append(_RANGOS[rango])
+    if desde:
+        cond.append("creado_en >= %s"); args.append(desde + " 00:00:00")
+    if hasta:
+        cond.append("creado_en <= %s"); args.append(hasta + " 23:59:59")
+    if busqueda:
+        cond.append("descripcion LIKE %s"); args.append(f"%{busqueda.strip()}%")
+    if licitacion:
+        ca_ids, li_ids = _fila_ids_por_licitacion(licitacion.strip())
+        partes = []
+        if ca_ids:
+            ph = ",".join(["%s"] * len(ca_ids))
+            partes.append(f"(tabla_origen='compra_agil' AND fila_id IN ({ph}))")
+            args.extend(ca_ids)
+        if li_ids:
+            ph = ",".join(["%s"] * len(li_ids))
+            partes.append(f"(tabla_origen='Licitaciones_diarias' AND fila_id IN ({ph}))")
+            args.extend(li_ids)
+        cond.append("(" + " OR ".join(partes) + ")" if partes else "1=0")
+    where = " AND ".join(cond)
+    filas = _query(
+        "SELECT id, tabla_origen, fila_id, descripcion, interes_sugerido, "
+        "pactivo_sugerido, composicion_sugerida, presentacion_sugerida, "
+        "confianza, metodo, razon, pactivo_nuevo, creado_en, revisado, "
+        "revisado_por, revisado_en, feedback_correcto "
+        f"FROM clasificador_ia_log WHERE {where} ORDER BY creado_en DESC LIMIT 50000",
+        tuple(args),
+    )
+    # Trae N° licitación
+    num_lic: dict = {}
+    por_tabla: dict = {}
+    for f in filas:
+        por_tabla.setdefault(f["tabla_origen"], []).append(f["fila_id"])
+    for t, ids in por_tabla.items():
+        if t in TABLAS_VALIDAS and ids:
+            ph = ",".join(["%s"] * len(ids))
+            try:
+                for r in _query(
+                    f"SELECT id, Licitacion FROM `{t}` WHERE id IN ({ph})",
+                    tuple(ids),
+                ):
+                    num_lic[(t, r["id"])] = r["Licitacion"]
+            except Exception:  # noqa: BLE001
+                pass
+
+    buf = _io.StringIO()
+    buf.write("﻿")  # BOM para Excel ES
+    w = _csv.writer(buf, delimiter=";", quoting=_csv.QUOTE_MINIMAL)
+    w.writerow(["N° Licitación", "Tabla", "Fila ID", "Tipo IA", "Pactivo IA",
+                "Composición", "Presentación", "Confianza", "Vía", "Razón IA",
+                "Pactivo Nuevo", "Descripción", "Fecha clasif.",
+                "Revisada", "Revisor", "Fecha revisión", "Acierto humano"])
+    for f in filas:
+        tipo_ia = "INTERÉS" if f.get("interes_sugerido") == 1 else "descarte"
+        if (f.get("pactivo_nuevo") or "").strip():
+            tipo_ia = "PACTIVO NUEVO"
+        w.writerow([
+            num_lic.get((f["tabla_origen"], f["fila_id"])) or "",
+            f["tabla_origen"], f["fila_id"], tipo_ia,
+            f.get("pactivo_sugerido") or "",
+            f.get("composicion_sugerida") or "",
+            f.get("presentacion_sugerida") or "",
+            f"{float(f.get('confianza') or 0):.2f}",
+            _METODOS.get(f.get("metodo"), f.get("metodo") or ""),
+            f.get("razon") or "",
+            f.get("pactivo_nuevo") or "",
+            (f.get("descripcion") or "").replace("\n", " ").replace("\r", " "),
+            f.get("creado_en").strftime("%Y-%m-%d %H:%M") if f.get("creado_en") else "",
+            "sí" if f.get("revisado") else "no",
+            f.get("revisado_por") or "",
+            f.get("revisado_en").strftime("%Y-%m-%d %H:%M") if f.get("revisado_en") else "",
+            ("sí" if f.get("feedback_correcto") == 1 else "no") if f.get("revisado") else "",
+        ])
+    buf.seek(0)
+    nombre = f"revision-{datetime.now():%Y%m%d-%H%M}.csv"
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{nombre}"'},
+    )
+
+
+def qs_extras_str(tabla, tipo, metodo, conf, rango, desde, hasta, estado, busqueda, licitacion):
+    """Querystring común para preservar filtros al armar links/export."""
+    pares = [
+        ("tabla", tabla), ("tipo", tipo), ("metodo", metodo), ("conf", conf),
+        ("rango", rango), ("desde", desde), ("hasta", hasta),
+        ("estado", estado if estado != "pendientes" else ""),
+        ("busqueda", busqueda), ("licitacion", licitacion),
+    ]
+    return "&".join(f"{k}={v}" for k, v in pares if v)
+
+
 # Etiquetas legibles de cada etapa de la cascada que resolvió la fila.
 _METODOS = {
     "cruce_base": "cruce Base",
@@ -516,6 +641,7 @@ _METODOS = {
 
 _ESTADOS = {"pendientes": "revisado=0", "revisadas": "revisado=1", "todas": "1=1"}
 _RANGOS = {
+    "ayer_hoy": "creado_en >= CURDATE() - INTERVAL 1 DAY",
     "hoy": "creado_en >= CURDATE()",
     "ayer": "creado_en >= CURDATE() - INTERVAL 1 DAY AND creado_en < CURDATE()",
     "semana": "creado_en >= CURDATE() - INTERVAL 7 DAY",
@@ -523,15 +649,84 @@ _RANGOS = {
 }
 
 
+# Supergrupos para ordenar visualmente la cola. El revisor ve primero los
+# clusters claros (interés con histórico/cruce que son los más confiables) y
+# después los que requieren más atención (Claude, conflictos). Adjuntos y
+# pactivos nuevos van como categorías propias.
+def _supergrupo(fila: dict) -> tuple:
+    """Devuelve (clave_orden, etiqueta_visible) para agrupar la fila."""
+    interes = fila.get("interes_sugerido")
+    metodo = fila.get("metodo") or ""
+    tabla = fila.get("tabla_origen") or ""
+    pact = (fila.get("pactivo_sugerido") or "").strip()
+    es_nuevo = bool((fila.get("pactivo_nuevo") or "").strip())
+
+    if es_nuevo:
+        return ("z1_nuevo", "⚠ PACTIVOS NUEVOS · Claude propuso fuera de catálogo")
+    if pact == "Adjunto" and tabla == "compra_agil":
+        return ("y1_adj_ca", "📎 ADJUNTOS · COMPRAS ÁGILES")
+    if pact == "Adjunto" and tabla == "Licitaciones_diarias":
+        return ("y2_adj_li", "📎 ADJUNTOS · LICITACIONES")
+    if interes == 1:
+        if metodo in ("cruce_base", "historico"):
+            return ("a1_int_hist", "🟢 INTERÉS · Cruce histórico (OC reales + descripción ya clasificada)")
+        if metodo in ("modelo_pactivo",):
+            return ("a2_int_ml", "🟢 INTERÉS · Clasificación ML (modelo entrenado de pactivo)")
+        if metodo == "regla_diccionario":
+            return ("a3_int_reglas", "🟢 INTERÉS · Reglas (match diccionario)")
+        if metodo == "claude":
+            return ("a4_int_claude", "🟢 INTERÉS · Claude")
+        return ("a9_int_otro", "🟢 INTERÉS · otro")
+    if interes == 0:
+        if metodo == "descarte_item":
+            return ("b1_desc_item", "🔴 DESCARTE · Por rubro (códigos siempre descartados)")
+        if metodo == "modelo_descarte":
+            return ("b2_desc_ml", "🔴 DESCARTE · Clasificador entrenado")
+        if metodo == "conflicto_regla_modelo":
+            return ("b3_desc_conf", "🔴 DESCARTE · Conflicto regla vs modelo")
+        if metodo == "historico":
+            return ("b4_desc_hist", "🔴 DESCARTE · Histórico humano")
+        if metodo == "claude":
+            return ("b5_desc_claude", "🔴 DESCARTE · Claude")
+        return ("b9_desc_otro", "🔴 DESCARTE · otro")
+    return ("zz", "otro")
+
+
+def _fila_ids_por_licitacion(numero: str) -> "tuple[list, list]":
+    """Busca el número de licitación/compra ágil en las 2 tablas origen y
+    devuelve (compra_agil_ids, licitaciones_ids). El revisor escribe el número
+    en el filtro y vemos exactamente esa fila. Match LIKE para tolerar prefijos."""
+    if not numero:
+        return ([], [])
+    out = ([], [])
+    for i, t in enumerate(TABLAS_VALIDAS):
+        try:
+            r = _query(
+                f"SELECT id FROM `{t}` WHERE Licitacion LIKE %s LIMIT 200",
+                (f"%{numero}%",),
+            )
+            out[i].extend(x["id"] for x in r if "id" in x)
+        except Exception:  # noqa: BLE001
+            pass
+    return out
+
+
 @app.get("/revision", response_class=HTMLResponse)
 def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
              tipo: str = "", metodo: str = "", conf: str = "", por_hoja: int = 0,
              estado: str = "pendientes", rango: str = "",
-             desde: str = "", hasta: str = "") -> str:
+             desde: str = "", hasta: str = "",
+             busqueda: str = "", licitacion: str = "") -> str:
     usuario = usuario_actual(request)
     hoja = max(1, hoja)
     por_hoja = por_hoja if por_hoja in POR_HOJA_OPCIONES else POR_HOJA_DEFAULT
     estado = estado if estado in _ESTADOS else "pendientes"
+    # Default fecha: ayer+hoy si el usuario no especificó nada (lo que está
+    # procesando ahora + lo que dejó ayer). Para ver todo: rango='todas'.
+    if not rango and not desde and not hasta:
+        rango = "ayer_hoy"
+    if rango == "todas":
+        rango = ""
     cond = [_ESTADOS[estado]]
     args: list = []
     if tabla in TABLAS_VALIDAS:
@@ -559,11 +754,55 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
     if hasta:
         cond.append("creado_en <= %s")
         args.append(hasta + " 23:59:59")
+    # Búsqueda de texto en la descripción (LIKE %X%)
+    if busqueda:
+        cond.append("descripcion LIKE %s")
+        args.append(f"%{busqueda.strip()}%")
+    # Filtro por número de licitación / compra ágil: pre-resuelve los fila_id
+    # en la tabla origen para no JOIN-ear en cada query.
+    if licitacion:
+        ca_ids, li_ids = _fila_ids_por_licitacion(licitacion.strip())
+        partes = []
+        if ca_ids:
+            ph = ",".join(["%s"] * len(ca_ids))
+            partes.append(f"(tabla_origen='compra_agil' AND fila_id IN ({ph}))")
+            args.extend(ca_ids)
+        if li_ids:
+            ph = ",".join(["%s"] * len(li_ids))
+            partes.append(f"(tabla_origen='Licitaciones_diarias' AND fila_id IN ({ph}))")
+            args.extend(li_ids)
+        if not partes:
+            cond.append("1=0")  # nada encontrado → no devuelve nada
+        else:
+            cond.append("(" + " OR ".join(partes) + ")")
     where = " AND ".join(cond)
     # Para REVISADAS ordeno por revisado_en DESC (lo más recientemente cerrado
     # primero — es lo que el revisor quiere ver para auditar). Para pendientes,
-    # mantengo el orden por confianza ASC (lo dudoso primero).
-    orden = "revisado_en DESC" if estado == "revisadas" else "confianza ASC, creado_en DESC"
+    # ordeno PRIMERO por supergrupo (interés cruce histórico va primero,
+    # claude/conflictos al final) — el revisor procesa por bloques afines.
+    if estado == "revisadas":
+        orden = "revisado_en DESC"
+    else:
+        # Orden compuesto por supergrupo (lógico en SQL: CASE WHEN) — evita
+        # re-ordenar en Python después. El orden por confianza adentro de cada
+        # grupo sigue siendo válido (lo dudoso primero).
+        orden = """
+        CASE
+          WHEN pactivo_nuevo IS NOT NULL AND pactivo_nuevo<>'' THEN 'z1'
+          WHEN pactivo_sugerido='Adjunto' AND tabla_origen='compra_agil' THEN 'y1'
+          WHEN pactivo_sugerido='Adjunto' AND tabla_origen='Licitaciones_diarias' THEN 'y2'
+          WHEN interes_sugerido=1 AND metodo IN ('cruce_base','historico') THEN 'a1'
+          WHEN interes_sugerido=1 AND metodo='modelo_pactivo' THEN 'a2'
+          WHEN interes_sugerido=1 AND metodo='regla_diccionario' THEN 'a3'
+          WHEN interes_sugerido=1 AND metodo='claude' THEN 'a4'
+          WHEN interes_sugerido=0 AND metodo='descarte_item' THEN 'b1'
+          WHEN interes_sugerido=0 AND metodo='modelo_descarte' THEN 'b2'
+          WHEN interes_sugerido=0 AND metodo='conflicto_regla_modelo' THEN 'b3'
+          WHEN interes_sugerido=0 AND metodo='historico' THEN 'b4'
+          WHEN interes_sugerido=0 AND metodo='claude' THEN 'b5'
+          ELSE 'zz'
+        END, confianza ASC, creado_en DESC
+        """
     try:
         total = _query(
             f"SELECT COUNT(*) n FROM clasificador_ia_log WHERE {where}", tuple(args)
@@ -602,6 +841,7 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
     def filtro_link(clave: str, valor: str, etiqueta: str, activo: bool) -> str:
         cur = {"tabla": tabla, "tipo": tipo, "metodo": metodo,
                "conf": conf, "rango": rango, "desde": desde, "hasta": hasta,
+               "busqueda": busqueda, "licitacion": licitacion,
                "estado": estado if estado != "pendientes" else "",
                "por_hoja": str(por_hoja) if por_hoja != POR_HOJA_DEFAULT else ""}
         cur[clave] = valor
@@ -626,11 +866,12 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
         + filtro_link("tipo", "nuevo", "pactivo nuevo", tipo == "nuevo")
         + "</div>"
         + "<div class=filtros><b>Fecha:</b>"
-        + filtro_link("rango", "", "todas", not rango and not desde and not hasta)
-        + filtro_link("rango", "hoy", "hoy", rango == "hoy")
-        + filtro_link("rango", "ayer", "ayer", rango == "ayer")
+        + filtro_link("rango", "ayer_hoy", "ayer + hoy", rango == "ayer_hoy")
+        + filtro_link("rango", "hoy", "solo hoy", rango == "hoy")
+        + filtro_link("rango", "ayer", "solo ayer", rango == "ayer")
         + filtro_link("rango", "semana", "última semana", rango == "semana")
         + filtro_link("rango", "mes", "último mes", rango == "mes")
+        + filtro_link("rango", "todas", "todas", not rango and not desde and not hasta)
         + (
             f" &nbsp; <form method=get action='/revision' style='display:inline;font-size:13px'>"
             f"<input type=hidden name=estado value='{_e(estado)}'>"
@@ -639,12 +880,49 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
             f"<input type=hidden name=metodo value='{_e(metodo)}'>"
             f"<input type=hidden name=conf value='{_e(conf)}'>"
             f"<input type=hidden name=por_hoja value='{por_hoja}'>"
+            f"<input type=hidden name=busqueda value='{_e(busqueda)}'>"
+            f"<input type=hidden name=licitacion value='{_e(licitacion)}'>"
             f"<input type=date name=desde value='{_e(desde)}'>"
             f"&nbsp;a&nbsp;<input type=date name=hasta value='{_e(hasta)}'>"
             f"&nbsp;<button type=submit class=sec style='padding:4px 10px'>aplicar</button>"
             f"</form>"
         )
         + "</div>"
+        # Búsqueda libre + por número de licitación: forms independientes
+        + (
+            f"<div class=filtros><b>Buscar:</b>"
+            f"<form method=get action='/revision' style='display:inline;font-size:13px'>"
+            f"<input type=hidden name=estado value='{_e(estado)}'>"
+            f"<input type=hidden name=tabla value='{_e(tabla)}'>"
+            f"<input type=hidden name=tipo value='{_e(tipo)}'>"
+            f"<input type=hidden name=metodo value='{_e(metodo)}'>"
+            f"<input type=hidden name=conf value='{_e(conf)}'>"
+            f"<input type=hidden name=rango value='{_e(rango)}'>"
+            f"<input type=hidden name=desde value='{_e(desde)}'>"
+            f"<input type=hidden name=hasta value='{_e(hasta)}'>"
+            f"<input type=hidden name=por_hoja value='{por_hoja}'>"
+            f"<input type=hidden name=licitacion value='{_e(licitacion)}'>"
+            f"<input type=text name=busqueda value='{_e(busqueda)}' placeholder='palabra en la glosa…' style='width:240px'>"
+            f"&nbsp;<button type=submit class=sec style='padding:4px 10px'>buscar</button>"
+            f"</form>"
+            f"&nbsp;&nbsp;<b>N° licitación / compra:</b>"
+            f"<form method=get action='/revision' style='display:inline;font-size:13px'>"
+            f"<input type=hidden name=estado value='{_e(estado)}'>"
+            f"<input type=hidden name=tabla value='{_e(tabla)}'>"
+            f"<input type=hidden name=tipo value='{_e(tipo)}'>"
+            f"<input type=hidden name=metodo value='{_e(metodo)}'>"
+            f"<input type=hidden name=conf value='{_e(conf)}'>"
+            f"<input type=hidden name=rango value='{_e(rango)}'>"
+            f"<input type=hidden name=desde value='{_e(desde)}'>"
+            f"<input type=hidden name=hasta value='{_e(hasta)}'>"
+            f"<input type=hidden name=por_hoja value='{por_hoja}'>"
+            f"<input type=hidden name=busqueda value='{_e(busqueda)}'>"
+            f"<input type=text name=licitacion value='{_e(licitacion)}' placeholder='ej. 5523-145-L226' style='width:200px'>"
+            f"&nbsp;<button type=submit class=sec style='padding:4px 10px'>ir</button>"
+            f"</form>"
+            f"&nbsp;&nbsp;<a class=sec href='/revision.csv?{_e(qs_extras_str(tabla,tipo,metodo,conf,rango,desde,hasta,estado,busqueda,licitacion))}' style='text-decoration:none;padding:4px 10px;border:1px solid #cdd5e0;border-radius:6px;background:#fff;color:#1d2330;font-size:13px'>📥 Excel (CSV)</a>"
+            f"</div>"
+        )
         + "<div class=filtros><b>Confianza:</b>"
         + filtro_link("conf", "", "toda", not conf)
         + filtro_link("conf", "baja", "&lt; 0.70 (duda)", conf == "baja")
@@ -675,8 +953,46 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
     def _fmt_dt(dt):
         return dt.strftime("%d-%m-%Y %H:%M") if dt else "—"
 
+    # Pre-cuenta filas por supergrupo para inyectar headers con el total.
+    # Lo calculamos sobre TODO el conjunto filtrado (no solo la hoja), porque
+    # el revisor quiere saber cuántas hay en cada categoría aunque vea una.
+    grupo_counts: dict = {}
+    if total and estado == "pendientes":
+        try:
+            for r in _query(
+                "SELECT COUNT(*) n, "
+                "CASE "
+                "  WHEN pactivo_nuevo IS NOT NULL AND pactivo_nuevo<>'' THEN 'z1' "
+                "  WHEN pactivo_sugerido='Adjunto' AND tabla_origen='compra_agil' THEN 'y1' "
+                "  WHEN pactivo_sugerido='Adjunto' AND tabla_origen='Licitaciones_diarias' THEN 'y2' "
+                "  WHEN interes_sugerido=1 AND metodo IN ('cruce_base','historico') THEN 'a1' "
+                "  WHEN interes_sugerido=1 AND metodo='modelo_pactivo' THEN 'a2' "
+                "  WHEN interes_sugerido=1 AND metodo='regla_diccionario' THEN 'a3' "
+                "  WHEN interes_sugerido=1 AND metodo='claude' THEN 'a4' "
+                "  WHEN interes_sugerido=0 AND metodo='descarte_item' THEN 'b1' "
+                "  WHEN interes_sugerido=0 AND metodo='modelo_descarte' THEN 'b2' "
+                "  WHEN interes_sugerido=0 AND metodo='conflicto_regla_modelo' THEN 'b3' "
+                "  WHEN interes_sugerido=0 AND metodo='historico' THEN 'b4' "
+                "  WHEN interes_sugerido=0 AND metodo='claude' THEN 'b5' "
+                "  ELSE 'zz' END k "
+                f"FROM clasificador_ia_log WHERE {where} GROUP BY k",
+                tuple(args),
+            ):
+                grupo_counts[r["k"]] = r["n"]
+        except Exception:  # noqa: BLE001
+            pass
+
     bloques = []
+    grupo_actual = None
     for n, f in enumerate(filas):
+        # Encabezado de supergrupo cuando cambia
+        sg_key, sg_etiq = _supergrupo(f)
+        if sg_key != grupo_actual:
+            grupo_actual = sg_key
+            short_key = sg_key.split("_")[0] if "_" in sg_key else sg_key
+            n_grupo = grupo_counts.get(short_key, "")
+            n_html = f" <span class=grupo-n>({n_grupo:,} en total)</span>" if n_grupo else ""
+            bloques.append(f"<div class=grupo-hdr>{sg_etiq}{n_html}</div>")
         conf = float(f.get("confianza") or 0)
         interes = f.get("interes_sugerido")
         es_nuevo = bool((f.get("pactivo_nuevo") or "").strip())
@@ -838,6 +1154,8 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
             f"<input type=hidden name=desde value='{_e(desde)}'>"
             f"<input type=hidden name=hasta value='{_e(hasta)}'>"
             f"<input type=hidden name=por_hoja value='{por_hoja}'>"
+            f"<input type=hidden name=busqueda value='{_e(busqueda)}'>"
+            f"<input type=hidden name=licitacion value='{_e(licitacion)}'>"
             "<div class=barra>"
             f"<label>Revisor:</label><b>{_e(nombre_rev)}</b>"
             "<button type=button class=sec onclick='marcarTodos(true)'>Tildar todas</button>"
@@ -953,7 +1271,12 @@ def revisar_hoja(
     tipo: str = Form(""),
     metodo: str = Form(""),
     conf: str = Form(""),
+    rango: str = Form(""),
+    desde: str = Form(""),
+    hasta: str = Form(""),
     por_hoja: int = Form(POR_HOJA_DEFAULT),
+    busqueda: str = Form(""),
+    licitacion: str = Form(""),
     log_id: list[str] = Form([]),
     decision: list[str] = Form([]),
     pactivo: list[str] = Form([]),
@@ -1054,14 +1377,12 @@ def revisar_hoja(
     if sin_motivo:
         msg += f" {sin_motivo} sin motivo obligatorio."
     qs = f"/revision?hoja={hoja}&msg={msg}"
-    if tabla:
-        qs += f"&tabla={tabla}"
-    if tipo:
-        qs += f"&tipo={tipo}"
-    if metodo:
-        qs += f"&metodo={metodo}"
-    if conf:
-        qs += f"&conf={conf}"
+    for k, v in (("tabla", tabla), ("tipo", tipo), ("metodo", metodo),
+                 ("conf", conf), ("rango", rango), ("desde", desde),
+                 ("hasta", hasta), ("busqueda", busqueda),
+                 ("licitacion", licitacion)):
+        if v:
+            qs += f"&{k}={v}"
     if por_hoja != POR_HOJA_DEFAULT:
         qs += f"&por_hoja={por_hoja}"
     return RedirectResponse(qs, status_code=303)

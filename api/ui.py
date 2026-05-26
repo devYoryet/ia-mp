@@ -122,8 +122,16 @@ form.alta textarea { flex: 1; min-width: 320px; }
 .fila.revisada:hover { opacity: 1; }
 .ts { font-size: 11px; color: #95a5b8; margin-top: 3px; }
 .veredicto { margin-top: 6px; font-size: 13px; color: #3a4252; }
-input[type=date] { padding: 4px 8px; border: 1px solid #cdd5e0; border-radius: 6px;
-                   font-size: 13px; }
+input[type=date], input[type=text] { padding: 4px 8px; border: 1px solid #cdd5e0;
+                   border-radius: 6px; font-size: 13px; }
+
+/* Encabezado de SUPERGRUPO en la cola de revisión — separa visualmente bloques
+   afines (INTERÉS · Cruce histórico vs INTERÉS · Claude vs DESCARTE · Rubro)
+   para que el revisor procese por lotes claros. */
+.grupo-hdr { margin: 18px 0 8px; padding: 10px 14px; background: #1d2330; color: #fff;
+             border-radius: 8px; font-size: 14px; font-weight: 600;
+             letter-spacing: 0.2px; }
+.grupo-hdr .grupo-n { color: #b9c6d6; font-weight: 400; font-size: 13px; margin-left: 8px; }
 
 /* /comparacion — cross matrix de humano vs IA */
 .matriz { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px;
