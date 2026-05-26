@@ -501,113 +501,199 @@ _TIPOS = {
     "nuevo": "pactivo_nuevo IS NOT NULL AND pactivo_nuevo<>''",
 }
 
+# Columnas que exporta el legacy gestor_licitaciones para cada tabla.
+# Las replicamos para que el equipo encuentre lo mismo que ya conoce.
+# Source: gestor_2021/app/Http/Controllers/{CompraAgil,LicitacionesDiarias}Controller.php
+_LEGACY_COLS = {
+    "compra_agil": [
+        # (header_legacy, columna_sql_en_compra_agil)
+        ("Demandante", "Demandante"),
+        ("Unidad de compra", "Unidad_Compra"),
+        ("Región", "Region"),
+        ("Comuna", "Comuna"),
+        ("Fecha Publicación", "Fecha_Publicacion"),
+        ("Fecha Cierre", "Fecha_Cierre"),
+        ("Unidades", "Cantidad"),
+        ("Medida", "Unidad_Medida"),
+        ("Descripción", "Descripcion"),
+        ("Producto o Servicio a contratar", "Producto_Servicio"),
+        ("Licitación", "Licitacion"),
+        ("Item", "Item"),
+        ("Descripción PHT", "VINCULOS"),
+        ("Rut Cliente", "Rut_Cliente"),
+        ("Duración Contrato", "Duracion_Contrato"),
+        ("Precio Ponderación", "Precio_Ponderacion"),
+        ("Tiempo del contrato", "Tiempo_Contrato"),
+        ("Garantía seriedad ofertas", "Garantia_Seriedad_Ofertas"),
+        ("Garantía seriedad contrato", "Garantia_Seriedad_Contrato"),
+        ("Pactivo", "pactivo"),
+        ("Composición", "composicion"),
+        ("Presentación", "presentacion"),
+        ("Nombre del Contacto", "nombre_contacto"),
+        ("Teléfono de contacto", "telefono_contacto"),
+        ("Mail de contacto", "mail_contacto"),
+        ("Monto Total", "monto_total"),
+        ("Estado gestor", "estado_gestor"),
+        ("Usuario", "nombre_clasificador"),
+    ],
+    "Licitaciones_diarias": [
+        ("Demandante", "Demandante"),
+        ("Unidad de compra", "Unidad_Compra"),
+        ("Región", "Region"),
+        ("Comuna", "Comuna"),
+        ("Fecha Publicación", "Fecha_Publicacion"),
+        ("Fecha Cierre", "Fecha_Cierre"),
+        ("Fecha inicio pregunta", "Fechainiciopregunta"),
+        ("Fecha fin pregunta", "Fechafinalpregunta"),
+        ("Cod Onu", "Cod_Onu"),
+        ("Unidades", "Cantidad"),
+        ("Medida", "Unidad_Medida"),
+        ("Descripción", "Descripcion"),
+        ("Producto o Servicio a contratar", "Producto_Servicio"),
+        ("Licitación", "Licitacion"),
+        ("Item", "Item"),
+        ("Descripción PHT", "VINCULOS"),
+        ("Rut Cliente", "Rut_Cliente"),
+        ("Duración Contrato", "Duracion_Contrato"),
+        ("Precio Ponderación", "Precio_Ponderacion"),
+        ("Tiempo del contrato", "Tiempo_Contrato"),
+        ("Garantía seriedad ofertas", "Garantia_Seriedad_Ofertas"),
+        ("Garantía seriedad contrato", "Garantia_Seriedad_Contrato"),
+        ("Fecha Adjudicación", "Fechaadjudicacion"),
+        ("Pactivo", "pactivo"),
+        ("Composición", "composicion"),
+        ("Presentación", "presentacion"),
+        ("Estado gestor", "estado_gestor"),
+        ("Usuario", "nombre_clasificador"),
+    ],
+}
+
+# Columnas EXTRA con info de la IA que añadimos al final del legacy export
+# para que el revisor vea de un vistazo lo que la cascada propuso.
+_IA_EXTRAS_COLS = [
+    "IA · Tipo", "IA · Pactivo sugerido", "IA · Composición", "IA · Presentación",
+    "IA · Vía (etapa)", "IA · Confianza", "IA · Razón", "IA · Pactivo Nuevo",
+    "IA · Revisada", "IA · Revisor", "IA · Fecha revisión", "IA · Acierto humano",
+]
+
+
 @app.get("/revision.csv")
 def revision_csv(tabla: str = "", tipo: str = "", metodo: str = "", conf: str = "",
                  rango: str = "ayer_hoy", desde: str = "", hasta: str = "",
                  estado: str = "pendientes", busqueda: str = "",
                  licitacion: str = ""):
-    """Export Excel-friendly (CSV con BOM, semicolon, UTF-8) de las filas que
-    coinciden con el filtro actual de /revision. SIN paginar — exporta todas.
+    """Export estilo LEGACY gestor_licitaciones — mismas columnas que el equipo
+    ya conoce. Para tabla=compra_agil exporta las 28 columnas del legacy + 12
+    columnas IA. Para tabla=Licitaciones_diarias, las 28 del legacy de licit +
+    IA. Si tabla está vacío, exporta compra_agil (más común) — el usuario
+    cambia el filtro de tabla para licitaciones.
 
-    Usado para análisis offline o auditoría. Las columnas son las mismas que
-    el revisor ve en pantalla + N° licitación + fecha — sin metadata interna
-    del modelo. Para data cruda usar SQL directo sobre clasificador_ia_log."""
+    CSV con BOM UTF-8, delimiter `;` — listo para abrir en Excel ES."""
     import csv as _csv, io as _io
     from fastapi.responses import StreamingResponse
 
     estado = estado if estado in _ESTADOS else "pendientes"
     if rango == "todas":
         rango = ""
-    cond = [_ESTADOS[estado]]
-    args: list = []
-    if tabla in TABLAS_VALIDAS:
-        cond.append("tabla_origen=%s"); args.append(tabla)
+    # Si no hay filtro de tabla, default a compra_agil para usar su schema legacy
+    tabla_export = tabla if tabla in TABLAS_VALIDAS else "compra_agil"
+    cols_def = _LEGACY_COLS[tabla_export]
+
+    # WHERE sobre el log
+    cond = [_ESTADOS[estado], "log.tabla_origen = %s"]
+    args: list = [tabla_export]
     if tipo in _TIPOS:
-        cond.append(_TIPOS[tipo])
+        cond.append(_TIPOS[tipo].replace("interes_sugerido", "log.interes_sugerido")
+                                .replace("pactivo_nuevo", "log.pactivo_nuevo"))
     if metodo in _METODOS:
-        cond.append("metodo=%s"); args.append(metodo)
+        cond.append("log.metodo=%s"); args.append(metodo)
     if conf == "baja":
-        cond.append("confianza < 0.7")
+        cond.append("log.confianza < 0.7")
     elif conf == "media":
-        cond.append("confianza >= 0.7 AND confianza < 0.85")
+        cond.append("log.confianza >= 0.7 AND log.confianza < 0.85")
     elif conf == "alta":
-        cond.append("confianza >= 0.85")
+        cond.append("log.confianza >= 0.85")
     if rango in _RANGOS:
-        cond.append(_RANGOS[rango])
+        cond.append(_RANGOS[rango].replace("creado_en", "log.creado_en"))
     if desde:
-        cond.append("creado_en >= %s"); args.append(desde + " 00:00:00")
+        cond.append("log.creado_en >= %s"); args.append(desde + " 00:00:00")
     if hasta:
-        cond.append("creado_en <= %s"); args.append(hasta + " 23:59:59")
+        cond.append("log.creado_en <= %s"); args.append(hasta + " 23:59:59")
     if busqueda:
-        cond.append("descripcion LIKE %s"); args.append(f"%{busqueda.strip()}%")
+        cond.append("log.descripcion LIKE %s"); args.append(f"%{busqueda.strip()}%")
     if licitacion:
         ca_ids, li_ids = _fila_ids_por_licitacion(licitacion.strip())
-        partes = []
-        if ca_ids:
-            ph = ",".join(["%s"] * len(ca_ids))
-            partes.append(f"(tabla_origen='compra_agil' AND fila_id IN ({ph}))")
-            args.extend(ca_ids)
-        if li_ids:
-            ph = ",".join(["%s"] * len(li_ids))
-            partes.append(f"(tabla_origen='Licitaciones_diarias' AND fila_id IN ({ph}))")
-            args.extend(li_ids)
-        cond.append("(" + " OR ".join(partes) + ")" if partes else "1=0")
-    where = " AND ".join(cond)
-    filas = _query(
-        "SELECT id, tabla_origen, fila_id, descripcion, interes_sugerido, "
-        "pactivo_sugerido, composicion_sugerida, presentacion_sugerida, "
-        "confianza, metodo, razon, pactivo_nuevo, creado_en, revisado, "
-        "revisado_por, revisado_en, feedback_correcto "
-        f"FROM clasificador_ia_log WHERE {where} ORDER BY creado_en DESC LIMIT 50000",
-        tuple(args),
-    )
-    # Trae N° licitación
-    num_lic: dict = {}
-    por_tabla: dict = {}
-    for f in filas:
-        por_tabla.setdefault(f["tabla_origen"], []).append(f["fila_id"])
-    for t, ids in por_tabla.items():
-        if t in TABLAS_VALIDAS and ids:
+        ids = ca_ids if tabla_export == "compra_agil" else li_ids
+        if not ids:
+            cond.append("1=0")
+        else:
             ph = ",".join(["%s"] * len(ids))
-            try:
-                for r in _query(
-                    f"SELECT id, Licitacion FROM `{t}` WHERE id IN ({ph})",
-                    tuple(ids),
-                ):
-                    num_lic[(t, r["id"])] = r["Licitacion"]
-            except Exception:  # noqa: BLE001
-                pass
+            cond.append(f"log.fila_id IN ({ph})")
+            args.extend(ids)
+    where = " AND ".join(cond)
+
+    # SQL: JOIN log con tabla origen para traer las columnas legacy
+    col_list = ", ".join(f"t.`{sql_col}` AS `{sql_col}`" for _, sql_col in cols_def)
+    sql = (
+        f"SELECT {col_list}, "
+        "log.interes_sugerido AS ia_int, log.pactivo_sugerido AS ia_pact, "
+        "log.composicion_sugerida AS ia_comp, log.presentacion_sugerida AS ia_pres, "
+        "log.metodo AS ia_metodo, log.confianza AS ia_conf, log.razon AS ia_razon, "
+        "log.pactivo_nuevo AS ia_pactivo_nuevo, log.revisado AS ia_revisado, "
+        "log.revisado_por AS ia_revisor, log.revisado_en AS ia_revisado_en, "
+        "log.feedback_correcto AS ia_correcto "
+        f"FROM clasificador_ia_log log JOIN `{tabla_export}` t ON t.id = log.fila_id "
+        f"WHERE {where} ORDER BY log.creado_en DESC LIMIT 50000"
+    )
+    filas = _query(sql, tuple(args))
 
     buf = _io.StringIO()
     buf.write("﻿")  # BOM para Excel ES
     w = _csv.writer(buf, delimiter=";", quoting=_csv.QUOTE_MINIMAL)
-    w.writerow(["N° Licitación", "Tabla", "Fila ID", "Tipo IA", "Pactivo IA",
-                "Composición", "Presentación", "Confianza", "Vía", "Razón IA",
-                "Pactivo Nuevo", "Descripción", "Fecha clasif.",
-                "Revisada", "Revisor", "Fecha revisión", "Acierto humano"])
+    # Header: legacy + IA extras
+    w.writerow([h for h, _ in cols_def] + _IA_EXTRAS_COLS)
+
+    def _fmt(v):
+        """Limpia para CSV: quita newlines, convierte a str."""
+        if v is None:
+            return ""
+        if isinstance(v, datetime):
+            return v.strftime("%Y-%m-%d %H:%M")
+        s = str(v)
+        return s.replace("\n", " ").replace("\r", " ")
+
+    def _estado_legible(v):
+        return {1: "interés", 0: "descarte"}.get(v, "pendiente")
+
     for f in filas:
-        tipo_ia = "INTERÉS" if f.get("interes_sugerido") == 1 else "descarte"
-        if (f.get("pactivo_nuevo") or "").strip():
+        # Fila legacy: misma data que el Excel del gestor_licitaciones
+        row = [_fmt(f.get(sql_col)) for _, sql_col in cols_def]
+        # Sobrescribir "Estado gestor" con valor legible
+        for i, (_, sql_col) in enumerate(cols_def):
+            if sql_col == "estado_gestor":
+                row[i] = _estado_legible(f.get("estado_gestor"))
+        # Extras de IA
+        tipo_ia = "INTERÉS" if f.get("ia_int") == 1 else "descarte"
+        if (f.get("ia_pactivo_nuevo") or "").strip():
             tipo_ia = "PACTIVO NUEVO"
-        w.writerow([
-            num_lic.get((f["tabla_origen"], f["fila_id"])) or "",
-            f["tabla_origen"], f["fila_id"], tipo_ia,
-            f.get("pactivo_sugerido") or "",
-            f.get("composicion_sugerida") or "",
-            f.get("presentacion_sugerida") or "",
-            f"{float(f.get('confianza') or 0):.2f}",
-            _METODOS.get(f.get("metodo"), f.get("metodo") or ""),
-            f.get("razon") or "",
-            f.get("pactivo_nuevo") or "",
-            (f.get("descripcion") or "").replace("\n", " ").replace("\r", " "),
-            f.get("creado_en").strftime("%Y-%m-%d %H:%M") if f.get("creado_en") else "",
-            "sí" if f.get("revisado") else "no",
-            f.get("revisado_por") or "",
-            f.get("revisado_en").strftime("%Y-%m-%d %H:%M") if f.get("revisado_en") else "",
-            ("sí" if f.get("feedback_correcto") == 1 else "no") if f.get("revisado") else "",
-        ])
+        revisada = bool(f.get("ia_revisado"))
+        row += [
+            tipo_ia,
+            _fmt(f.get("ia_pact")),
+            _fmt(f.get("ia_comp")),
+            _fmt(f.get("ia_pres")),
+            _METODOS.get(f.get("ia_metodo"), _fmt(f.get("ia_metodo"))),
+            f"{float(f.get('ia_conf') or 0):.2f}",
+            _fmt(f.get("ia_razon")),
+            _fmt(f.get("ia_pactivo_nuevo")),
+            "sí" if revisada else "no",
+            _fmt(f.get("ia_revisor")),
+            _fmt(f.get("ia_revisado_en")),
+            ("sí" if f.get("ia_correcto") == 1 else "no") if revisada else "",
+        ]
+        w.writerow(row)
     buf.seek(0)
-    nombre = f"revision-{datetime.now():%Y%m%d-%H%M}.csv"
+    nombre = f"{tabla_export}-{datetime.now():%Y%m%d-%H%M}.csv"
     return StreamingResponse(
         iter([buf.getvalue()]),
         media_type="text/csv; charset=utf-8",
