@@ -26,8 +26,9 @@ import sys
 import time
 from datetime import datetime
 
-from fastapi import FastAPI, Form
+from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from starlette.middleware.sessions import SessionMiddleware
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 from config import config  # noqa: E402
@@ -35,11 +36,48 @@ from db import conectar  # noqa: E402
 from descarte_modelo import cargar_modelo_descarte, prob_descarte  # noqa: E402
 from reglas import normalizar  # noqa: E402
 
+from api.auth import router as auth_router, usuario_actual  # noqa: E402
 from api.legacy import router as legacy_router  # noqa: E402
 from api.ui import layout as _layout  # noqa: E402
 
 app = FastAPI(title="Clasificador IA — Pharmatender")
+app.include_router(auth_router)
 app.include_router(legacy_router)
+
+
+# Rutas que NO requieren login. /salud queda público para el healthcheck del
+# container; /api/catalogo se usa por el front del propio panel (ya logueado).
+_RUTAS_PUBLICAS = {"/login", "/logout", "/salud"}
+
+
+@app.middleware("http")
+async def proteger(request: Request, call_next):
+    """Si no hay sesión, redirige a /login conservando la URL pretendida."""
+    ruta = request.url.path
+    if ruta in _RUTAS_PUBLICAS:
+        return await call_next(request)
+    if usuario_actual(request) is None:
+        # Conservar el destino solo para GETs (un POST sin sesión queda perdido
+        # de todos modos y reintentarlo con next= sería confuso).
+        if request.method == "GET":
+            destino = ruta + (f"?{request.url.query}" if request.url.query else "")
+            return RedirectResponse(f"/login?next={destino}", status_code=303)
+        return RedirectResponse("/login", status_code=303)
+    return await call_next(request)
+
+
+# SessionMiddleware se agrega ÚLTIMO: en Starlette, el último middleware
+# agregado es el más externo. Necesitamos que envuelva a `proteger` para que
+# cuando `proteger` lea `request.session`, la cookie ya esté decodificada.
+# Cookie firmada (HMAC + itsdangerous), 8h de vida — alcanza para una jornada.
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=config.session_secret,
+    session_cookie="iabot_sess",
+    max_age=8 * 3600,
+    same_site="lax",
+    https_only=False,  # nginx termina TLS; la cookie viaja en HTTP interno.
+)
 
 TABLAS_VALIDAS = ("compra_agil", "Licitaciones_diarias")
 POR_HOJA_DEFAULT = 50  # filas por hoja en la cola de revisión (configurable)
@@ -165,7 +203,8 @@ def _select(nombre: str, fila_n: int, clase: str, valor: str, opciones: list) ->
 
 # ---------------------------------------------------------------- Resumen ---
 @app.get("/", response_class=HTMLResponse)
-def resumen() -> str:
+def resumen(request: Request) -> str:
+    usuario = usuario_actual(request)
     try:
         log = _query(
             "SELECT COUNT(*) n, SUM(revisado=0) pend, SUM(revisado=1) rev, "
@@ -189,6 +228,7 @@ def resumen() -> str:
             "Error",
             f"<div class=vacio>No se pudo leer la base.<br><small>{_e(exc)}</small><br><br>"
             "¿Creaste las tablas con <code>schema/auditoria.sql</code>?</div>",
+            usuario=usuario,
         )
     rev = log["rev"] or 0
     prec = f"{(log['ok'] or 0) / rev * 100:.1f}%" if rev else "—"
@@ -211,7 +251,7 @@ def resumen() -> str:
         "<div class=aviso>Modo actual del worker: <b>" + _e(config.modo) + "</b>. "
         "La cola de revisión se llena cuando el worker corre en modo producción.</div>"
     )
-    return _layout("Resumen", cuerpo)
+    return _layout("Resumen", cuerpo, usuario=usuario)
 
 
 # ------------------------------------------------------------ Comparación ---
@@ -230,15 +270,16 @@ _CELDAS = {
 
 
 @app.get("/comparacion", response_class=HTMLResponse)
-def comparacion(cell: str = "", metodo: str = "", pactivo_sug: str = "",
-                limit: int = 100) -> str:
+def comparacion(request: Request, cell: str = "", metodo: str = "",
+                pactivo_sug: str = "", limit: int = 100) -> str:
+    usuario = usuario_actual(request)
     # Si vienen filtros de drill-down, mostrar listado en vez de dashboard.
     if cell or metodo or pactivo_sug:
-        return _comparacion_listado(cell, metodo, pactivo_sug, limit)
-    return _comparacion_dashboard()
+        return _comparacion_listado(cell, metodo, pactivo_sug, limit, usuario)
+    return _comparacion_dashboard(usuario)
 
 
-def _comparacion_dashboard() -> str:
+def _comparacion_dashboard(usuario: dict | None = None) -> str:
     try:
         tot = _query("SELECT COUNT(*) n FROM clasificador_ia_backtest")[0]["n"]
         if not tot:
@@ -247,6 +288,7 @@ def _comparacion_dashboard() -> str:
                 "<h1>Backtest · IA vs personas</h1><div class=vacio>Aún no hay filas "
                 "comparadas. El container <code>backtest</code> está procesando 200 "
                 "filas cada 15 min — volvé en un rato.</div>",
+                usuario=usuario,
             )
         r = _query(
             "SELECT COUNT(*) n, SUM(coincide_interes) ci, "
@@ -284,7 +326,7 @@ def _comparacion_dashboard() -> str:
         )
         acum = _query("SELECT IFNULL(SUM(costo_usd),0) c FROM clasificador_ia_costos")[0]["c"]
     except Exception as exc:  # noqa: BLE001
-        return _layout("Error", f"<div class=vacio>{_e(exc)}</div>")
+        return _layout("Error", f"<div class=vacio>{_e(exc)}</div>", usuario=usuario)
 
     def pct(ok, t):
         return f"{(ok or 0) / t * 100:.1f}%" if t else "—"
@@ -368,10 +410,11 @@ def _comparacion_dashboard() -> str:
         + metodo_html
         + sosp_html
     )
-    return _layout("Backtest", cuerpo)
+    return _layout("Backtest", cuerpo, usuario=usuario)
 
 
-def _comparacion_listado(cell: str, metodo: str, pactivo_sug: str, limit: int) -> str:
+def _comparacion_listado(cell: str, metodo: str, pactivo_sug: str, limit: int,
+                         usuario: dict | None = None) -> str:
     """Drill-down: muestra las filas que caen en un filtro específico."""
     limit = max(20, min(500, limit))
     cond = []
@@ -406,7 +449,7 @@ def _comparacion_listado(cell: str, metodo: str, pactivo_sug: str, limit: int) -
             tuple(args) + (limit,),
         )
     except Exception as exc:  # noqa: BLE001
-        return _layout("Error", f"<div class=vacio>{_e(exc)}</div>")
+        return _layout("Error", f"<div class=vacio>{_e(exc)}</div>", usuario=usuario)
 
     bloques = []
     for f in filas:
@@ -442,7 +485,7 @@ def _comparacion_listado(cell: str, metodo: str, pactivo_sug: str, limit: int) -
            f"Subir LIMIT: <a href='/comparacion?{qs_paginar}&limit=500'>ver 500</a></p>"
            if total > limit else "")
     )
-    return _layout("Backtest detalle", cuerpo)
+    return _layout("Backtest detalle", cuerpo, usuario=usuario)
 
 
 # --------------------------------------------------------------- Revisión ---
@@ -481,10 +524,11 @@ _RANGOS = {
 
 
 @app.get("/revision", response_class=HTMLResponse)
-def revision(hoja: int = 1, msg: str = "", tabla: str = "", tipo: str = "",
-             metodo: str = "", conf: str = "", por_hoja: int = 0,
+def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
+             tipo: str = "", metodo: str = "", conf: str = "", por_hoja: int = 0,
              estado: str = "pendientes", rango: str = "",
              desde: str = "", hasta: str = "") -> str:
+    usuario = usuario_actual(request)
     hoja = max(1, hoja)
     por_hoja = por_hoja if por_hoja in POR_HOJA_OPCIONES else POR_HOJA_DEFAULT
     estado = estado if estado in _ESTADOS else "pendientes"
@@ -534,7 +578,7 @@ def revision(hoja: int = 1, msg: str = "", tabla: str = "", tipo: str = "",
             tuple(args) + (por_hoja, (hoja - 1) * por_hoja),
         )
     except Exception as exc:  # noqa: BLE001
-        return _layout("Error", f"<div class=vacio>{_e(exc)}</div>")
+        return _layout("Error", f"<div class=vacio>{_e(exc)}</div>", usuario=usuario)
 
     # número de licitación / compra ágil de cada fila — vive en la tabla origen,
     # no en el log; se trae con una consulta por tabla (no una por fila).
@@ -622,6 +666,7 @@ def revision(hoja: int = 1, msg: str = "", tabla: str = "", tipo: str = "",
             "Cola de revisión",
             "<h1>Cola de revisión</h1>" + filtros
             + "<div class=vacio>No hay clasificaciones pendientes con ese filtro. 🎉</div>",
+            usuario=usuario,
         )
 
     cat = _catalogo()
@@ -778,6 +823,9 @@ def revision(hoja: int = 1, msg: str = "", tabla: str = "", tipo: str = "",
         "todas": f"Todas las clasificaciones · {total}",
     }[estado]
     if estado == "pendientes":
+        # El nombre del logueado va al campo `nombre_clasificador` de cada fila
+        # aprobada — antes era un input que el revisor escribía a mano.
+        nombre_rev = (usuario or {}).get("name", "—") if usuario else "—"
         cuerpo = (
             f"<h1>{titulo_h1}</h1>{aviso}{filtros}"
             f"<form method=post action='/revisar-hoja' id='formhoja'>"
@@ -791,8 +839,7 @@ def revision(hoja: int = 1, msg: str = "", tabla: str = "", tipo: str = "",
             f"<input type=hidden name=hasta value='{_e(hasta)}'>"
             f"<input type=hidden name=por_hoja value='{por_hoja}'>"
             "<div class=barra>"
-            "<label>Revisor:</label>"
-            "<input name=revisor placeholder='tu nombre' required>"
+            f"<label>Revisor:</label><b>{_e(nombre_rev)}</b>"
             "<button type=button class=sec onclick='marcarTodos(true)'>Tildar todas</button>"
             "<button type=button class=sec onclick='marcarTodos(false)'>Destildar todas</button>"
             "<button type=submit>Aprobar <span id=cuenta>0</span> marcadas</button>"
@@ -808,7 +855,7 @@ def revision(hoja: int = 1, msg: str = "", tabla: str = "", tipo: str = "",
             f"<h1>{titulo_h1}</h1>{aviso}{filtros}"
             + "".join(bloques) + pag
         )
-    return _layout("Cola de revisión", cuerpo)
+    return _layout("Cola de revisión", cuerpo, usuario=usuario)
 
 
 # JS: selects dependientes (pactivo→comp/pres) + auto-cambio a "Corregir" al editar.
@@ -900,7 +947,7 @@ actualizarCuenta();
 
 @app.post("/revisar-hoja")
 def revisar_hoja(
-    revisor: str = Form(...),
+    request: Request,
     hoja: int = Form(1),
     tabla: str = Form(""),
     tipo: str = Form(""),
@@ -915,7 +962,10 @@ def revisar_hoja(
     motivo: list[str] = Form([]),
     procesar: list[str] = Form([]),
 ):
-    revisor = revisor.strip()[:80] or "anónimo"
+    # El revisor sale de la sesión, no del form — así `nombre_clasificador`
+    # queda firmado por el usuario logueado (no por un texto libre).
+    u = usuario_actual(request)
+    revisor = (u["name"] if u else "").strip()[:80] or "anónimo"
     ahora = datetime.now()
     aplicadas = 0
     sin_motivo = 0
@@ -1019,14 +1069,15 @@ def revisar_hoja(
 
 # ----------------------------------------------------------------- Reglas ---
 @app.get("/reglas", response_class=HTMLResponse)
-def reglas(msg: str = "") -> str:
+def reglas(request: Request, msg: str = "") -> str:
+    usuario = usuario_actual(request)
     try:
         items = _query(
             "SELECT tipo, texto, creado_por, creado_en, activa FROM clasificador_ia_reglas "
             "WHERE activa=1 ORDER BY tipo, creado_en DESC LIMIT 200"
         )
     except Exception as exc:  # noqa: BLE001
-        return _layout("Error", f"<div class=vacio>{_e(exc)}</div>")
+        return _layout("Error", f"<div class=vacio>{_e(exc)}</div>", usuario=usuario)
 
     reglas_ = [x for x in items if x["tipo"] == "regla"]
     corr = [x for x in items if x["tipo"] == "correccion"]
@@ -1041,22 +1092,25 @@ def reglas(msg: str = "") -> str:
         return f"<table><tr><th>Texto</th><th>Por</th><th>Fecha</th></tr>{f}</table>"
 
     aviso = f"<div class=aviso>{_e(msg)}</div>" if msg else ""
+    # El campo `creado_por` ahora viene de la sesión, no de un input — la regla
+    # queda firmada por el usuario logueado.
     cuerpo = (
         "<h1>Reglas y correcciones — feedback al prompt</h1>" + aviso
         + "<form class=alta method=post action='/reglas'>"
-        "<input name=creado_por placeholder='tu nombre' required>"
         "<textarea name=texto placeholder='regla de negocio para la IA' required></textarea>"
         "<button type=submit>Agregar regla</button></form>"
         f"<h2>Reglas de negocio ({len(reglas_)})</h2>" + tabla(reglas_)
         + f"<h2>Errores corregidos — máxima prioridad ({len(corr)})</h2>" + tabla(corr)
     )
-    return _layout("Reglas", cuerpo)
+    return _layout("Reglas", cuerpo, usuario=usuario)
 
 
 @app.post("/reglas")
-def agregar_regla(creado_por: str = Form(...), texto: str = Form(...)):
+def agregar_regla(request: Request, texto: str = Form(...)):
     texto = texto.strip()
     if texto:
+        u = usuario_actual(request)
+        creado_por = ((u["name"] if u else "") or "").strip()[:80] or "anónimo"
         conn = conectar()
         try:
             with conn.cursor() as cur:
@@ -1064,7 +1118,7 @@ def agregar_regla(creado_por: str = Form(...), texto: str = Form(...)):
                     "INSERT INTO clasificador_ia_reglas "
                     "(tipo, texto, creado_por, creado_en, activa) "
                     "VALUES ('regla',%s,%s,%s,1)",
-                    (texto, creado_por.strip()[:80] or "anónimo", datetime.now()),
+                    (texto, creado_por, datetime.now()),
                 )
             conn.commit()
         finally:

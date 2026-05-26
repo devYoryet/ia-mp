@@ -25,9 +25,10 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse
 
+from api.auth import usuario_actual
 from api.ui import escape, layout
 
 
@@ -233,7 +234,7 @@ def _lanzar(mod: Modulo, archivo: Path, nombre_original: str) -> int:
 
 @router.get("", response_class=HTMLResponse)
 @router.get("/", response_class=HTMLResponse)
-def indice() -> str:
+def indice(request: Request) -> str:
     cards = "".join(
         f"<a class=modulo-card href='/legacy/{m.slug}'>"
         f"<div class=titulo>{m.emoji} {escape(m.titulo)}</div>"
@@ -247,12 +248,12 @@ def indice() -> str:
         f"en <code>bin/</code>. Carpeta de trabajo: <code>{escape(TEMP_DIR)}</code>.</div>"
         f"<div class=cards>{cards}</div>"
     )
-    return layout("Legacy", cuerpo)
+    return layout("Legacy", cuerpo, usuario=usuario_actual(request))
 
 
 # ============================================================== VISTA ====
 
-def _vista_modulo(slug: str) -> str:
+def _vista_modulo(slug: str, usuario: dict | None = None) -> str:
     mod = _mod(slug)
     log_path = _log_file(slug)
     log_inicial = ""
@@ -423,12 +424,12 @@ def _vista_modulo(slug: str) -> str:
 }})();
 </script>
 """
-    return layout(mod.titulo, cuerpo)
+    return layout(mod.titulo, cuerpo, usuario=usuario)
 
 
 @router.get("/{slug}", response_class=HTMLResponse)
-def vista(slug: str) -> str:
-    return _vista_modulo(slug)
+def vista(request: Request, slug: str) -> str:
+    return _vista_modulo(slug, usuario=usuario_actual(request))
 
 
 # =========================================================== ENDPOINTS ===

@@ -7,6 +7,10 @@ fastapi>=0.115.0
 uvicorn>=0.30.0
 pydantic>=2.6.0
 python-multipart>=0.0.9
+# Verificación de contraseñas $2y$10$ (bcrypt) de la tabla users de Laravel.
+bcrypt>=4.1.0
+# Cookies de sesión firmadas para el login del panel.
+itsdangerous>=2.2.0
 # Clasificador de descarte (entrenado con el histórico etiquetado).
 scikit-learn>=1.5.0
 joblib>=1.4.0

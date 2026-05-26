@@ -77,5 +77,11 @@ class Config:
     budget_usd: float = float(os.getenv("BUDGET_USD", "350"))
     filas_mes_estimado: int = int(os.getenv("FILAS_MES_ESTIMADO", "350000"))
 
+    # Clave para firmar las cookies de sesión del panel (login). Si falta, se
+    # arma una efímera por proceso — al reiniciar invalida las sesiones, así
+    # que en producción SIEMPRE poner SESSION_SECRET en .env (un valor fijo y
+    # secreto). Las contraseñas se validan contra la tabla `users` del legacy.
+    session_secret: str = os.getenv("SESSION_SECRET", "") or os.urandom(32).hex()
+
 
 config = Config()

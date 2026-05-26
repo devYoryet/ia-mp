@@ -14,10 +14,23 @@ CSS = """
 body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; background: #eef1f4;
        color: #1d2330; line-height: 1.5; }
 header { background: #16263d; color: #fff; padding: 14px 28px; display: flex;
-         align-items: center; justify-content: space-between; flex-wrap: wrap; }
+         align-items: center; justify-content: space-between; flex-wrap: wrap;
+         gap: 12px; }
 header b { font-size: 18px; }
+header nav { display: flex; align-items: center; flex-wrap: wrap; }
 header nav a { color: #b9c6d6; text-decoration: none; margin-left: 20px; font-size: 14px; }
 header nav a:hover { color: #fff; }
+header .usuario { display: inline-flex; align-items: center; gap: 8px;
+                  margin-left: 22px; padding: 5px 10px;
+                  background: rgba(255,255,255,.08); border-radius: 999px;
+                  font-size: 13px; color: #d6e0ec; }
+header .usuario .avatar { width: 22px; height: 22px; border-radius: 50%;
+                          background: linear-gradient(135deg,#6cf,#7df0a8);
+                          color: #07101f; font-weight: 700; font-size: 11px;
+                          display: grid; place-items: center; }
+header .usuario a { margin-left: 4px; color: #93a4c0; font-size: 12px;
+                    text-decoration: none; }
+header .usuario a:hover { color: #fff; }
 main { max-width: 1120px; margin: 24px auto; padding: 0 20px; }
 h1 { font-size: 20px; margin-bottom: 14px; }
 h2 { font-size: 15px; color: #6b7689; margin: 22px 0 10px; }
@@ -143,12 +156,32 @@ def escape(v) -> str:
     return html.escape("" if v is None else str(v))
 
 
-def layout(titulo: str, cuerpo: str) -> str:
+def _iniciales(nombre: str) -> str:
+    partes = [p for p in (nombre or "").split() if p]
+    if not partes:
+        return "?"
+    if len(partes) == 1:
+        return partes[0][:2].upper()
+    return (partes[0][:1] + partes[-1][:1]).upper()
+
+
+def layout(titulo: str, cuerpo: str, usuario: dict | None = None) -> str:
     nav = "".join(f"<a href='{h}'>{escape(t)}</a>" for t, h in NAV)
+    if usuario and usuario.get("name"):
+        chip = (
+            f"<span class='usuario'>"
+            f"<span class='avatar'>{escape(_iniciales(usuario['name']))}</span>"
+            f"<span>{escape(usuario['name'])}</span>"
+            f"<a href='/logout' title='Cerrar sesión'>salir</a>"
+            f"</span>"
+        )
+    else:
+        chip = ""
     return (
         "<!doctype html><html lang=es><head><meta charset=utf-8>"
         "<meta name=viewport content='width=device-width,initial-scale=1'>"
         f"<title>{escape(titulo)} · IA Bot</title><style>{CSS}</style></head><body>"
-        f"<header><b>IA Bot · Pharmatender</b><nav>{nav}</nav></header>"
+        f"<header><b>IA Bot · Pharmatender</b>"
+        f"<nav>{nav}{chip}</nav></header>"
         f"<main>{cuerpo}</main></body></html>"
     )
