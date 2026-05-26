@@ -1124,12 +1124,28 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
         pag += f"<a href='/revision?hoja={hoja+1}{qs_base}'>siguiente »</a>"
     pag += "</div>"
 
+    # Badge de "outbox pendiente" — lotes que el revisor aprobó pero NO se
+    # sincronizaron a la BD (BD inaccesible). NADA se pierde porque están en
+    # disco. El badge invita al revisor a clickear "Sincronizar".
+    n_outbox = 0
+    try:
+        import sync_pendientes as _sp_count
+        n_outbox = len(_sp_count.listar_pendientes())
+    except Exception:  # noqa: BLE001
+        pass
+    badge_outbox = (
+        f"<a class=outbox-bad href='/sincronizar' title='Hay {n_outbox} lote(s) "
+        f"aprobado(s) que no se sincronizaron con clásico. Click para reintentar.'>"
+        f"⚠ {n_outbox} pendiente(s) de sincronizar</a>"
+        if n_outbox else ""
+    )
+
     # Solo pendientes muestra form + botones de aprobar. Para revisadas/todas
     # la vista es de auditoría: lista de lectura con timestamps y veredicto.
     titulo_h1 = {
-        "pendientes": f"Cola de revisión · {total} pendientes",
-        "revisadas": f"Revisadas · {total} cerradas",
-        "todas": f"Todas las clasificaciones · {total}",
+        "pendientes": f"Cola de revisión · {total} pendientes {badge_outbox}",
+        "revisadas": f"Revisadas · {total} cerradas {badge_outbox}",
+        "todas": f"Todas las clasificaciones · {total} {badge_outbox}",
     }[estado]
     if estado == "pendientes":
         # El nombre del logueado va al campo `nombre_clasificador` de cada fila
@@ -1278,97 +1294,73 @@ def revisar_hoja(
     motivo: list[str] = Form([]),
     procesar: list[str] = Form([]),
 ):
-    # El revisor sale de la sesión, no del form — así `nombre_clasificador`
-    # queda firmado por el usuario logueado (no por un texto libre).
+    # OUTBOX — el lote se PERSISTE en /app/pending/ ANTES de tocar la BD.
+    # Si la BD cae, el JSON queda y un cron/botón lo reintenta. Garantía:
+    # nada de lo que el revisor aprueba se pierde, aunque MySQL esté caído.
     u = usuario_actual(request)
     revisor = (u["name"] if u else "").strip()[:80] or "anónimo"
-    ahora = datetime.now()
-    aplicadas = 0
-    sin_motivo = 0
-    saltadas = 0
-    # `procesar` lleva los log_id de las filas QUE el revisor dejó tildadas
-    # (la mayoría — el patrón es "aprobar todas menos las que destildo"). Las
-    # destildadas se saltan y quedan pendientes para revisar luego.
     set_procesar = set(procesar)
-    conn = conectar()
-    try:
-        with conn.cursor() as cur:
-            for i, lid in enumerate(log_id):
-                if lid not in set_procesar:
-                    saltadas += 1
-                    continue
-                dec = decision[i] if i < len(decision) else "aprobar"
-                pact = (pactivo[i] if i < len(pactivo) else "").strip()
-                comp = (composicion[i] if i < len(composicion) else "").strip()
-                pres = (presentacion[i] if i < len(presentacion) else "").strip()
-                mot = (motivo[i] if i < len(motivo) else "").strip()
+    saltadas = 0
+    sin_motivo_v = 0
 
-                if dec in ("corregir", "descartar") and not mot:
-                    sin_motivo += 1  # se deja pendiente: el motivo es obligatorio
-                    continue
+    # Construir el lote con todo lo necesario para reintentar (idempotente)
+    items = []
+    for i, lid in enumerate(log_id):
+        if lid not in set_procesar:
+            saltadas += 1
+            continue
+        dec = decision[i] if i < len(decision) else "aprobar"
+        mot = (motivo[i] if i < len(motivo) else "").strip()
+        if dec in ("corregir", "descartar") and not mot:
+            sin_motivo_v += 1
+            continue
+        items.append({
+            "log_id": lid,
+            "decision": dec,
+            "pactivo": (pactivo[i] if i < len(pactivo) else "").strip(),
+            "composicion": (composicion[i] if i < len(composicion) else "").strip(),
+            "presentacion": (presentacion[i] if i < len(presentacion) else "").strip(),
+            "motivo": mot,
+        })
 
-                cur.execute(
-                    "SELECT tabla_origen, fila_id, interes_sugerido, pactivo_sugerido "
-                    "FROM clasificador_ia_log WHERE id=%s AND revisado=0",
-                    (lid,),
-                )
-                reg = cur.fetchone()
-                if not reg:
-                    continue
-                tabla_o = reg["tabla_origen"]
-                if tabla_o not in TABLAS_VALIDAS:
-                    continue
-
-                if dec == "descartar":
-                    estado, p, c, pr, correcto = 0, None, None, None, 0
-                elif dec == "corregir":
-                    estado, p, c, pr, correcto = 1, pact or None, comp or None, pres or None, 0
-                else:  # aprobar
-                    estado = reg["interes_sugerido"]
-                    if estado == 1:
-                        p, c, pr = pact or None, comp or None, pres or None
-                    else:
-                        p, c, pr = None, None, None
-                    correcto = 1
-
-                # 1) escribir en la tabla origen (en demo sin esas tablas, no falla el resto)
-                try:
-                    cur.execute(
-                        f"UPDATE `{tabla_o}` SET estado_gestor=%s, pactivo=%s, composicion=%s, "
-                        f"presentacion=%s, nombre_clasificador=%s, fecha_clasificacion=%s "
-                        f"WHERE id=%s",
-                        (estado, p, c, pr, revisor, ahora, reg["fila_id"]),
-                    )
-                except Exception:  # noqa: BLE001
-                    pass
-                # 2) cerrar el registro de auditoría
-                cur.execute(
-                    "UPDATE clasificador_ia_log SET revisado=1, revisado_por=%s, "
-                    "revisado_en=%s, feedback_correcto=%s, feedback_pactivo=%s, "
-                    "feedback_notas=%s WHERE id=%s",
-                    (revisor, ahora, correcto, p if dec == "corregir" else None,
-                     mot or None, lid),
-                )
-                # 3) el "por qué" de una corrección/descarte entra como feedback al prompt
-                if dec in ("corregir", "descartar") and mot:
-                    cur.execute(
-                        "INSERT INTO clasificador_ia_reglas "
-                        "(tipo, texto, fila_ref, pactivo_malo, pactivo_bueno, "
-                        " creado_por, creado_en, activa) "
-                        "VALUES ('correccion',%s,%s,%s,%s,%s,%s,1)",
-                        (mot, f"{tabla_o}#{reg['fila_id']}", reg["pactivo_sugerido"],
-                         p if dec == "corregir" else None, revisor, ahora),
-                    )
-                aplicadas += 1
-        conn.commit()
-    finally:
-        conn.close()
+    aplicadas = 0
+    ya_revisadas = 0
+    pendiente = False
+    if items:
+        import json as _json
+        import sync_pendientes as _sp
+        lote = {
+            "ts": datetime.now().isoformat(timespec="seconds"),
+            "revisor": revisor,
+            "items": items,
+        }
+        # PASO CRÍTICO: persistir a disco con write+rename atómico
+        fp = _sp.guardar_pending(lote)
+        try:
+            aplic, ya, _ = _sp.aplicar_lote(lote)
+            aplicadas, ya_revisadas = aplic, ya
+            fp.unlink()  # éxito: borrar el JSON
+        except Exception as exc:  # noqa: BLE001
+            # JSON queda en pending. Reintenta cron + botón "Sincronizar".
+            pendiente = True
+            _err = str(exc)[:200]
+            import logging
+            logging.getLogger("revisar-hoja").warning(
+                "Lote %s NO sincronizó (%s) — queda en %s para retry",
+                lote["ts"], _err, fp,
+            )
 
     msg = f"{aplicadas} fila(s) revisada(s)."
+    if ya_revisadas:
+        msg += f" {ya_revisadas} ya estaba(n) procesadas (idempotente)."
     if saltadas:
         msg += f" {saltadas} destildada(s) quedaron pendientes."
-    if sin_motivo:
-        msg += f" {sin_motivo} sin motivo obligatorio."
+    if sin_motivo_v:
+        msg += f" {sin_motivo_v} sin motivo obligatorio."
+    if pendiente:
+        msg = (f"⚠ Lote ({len(items)} fila[s]) GUARDADO en outbox pero no se "
+               f"sincronizó con clásico (BD inaccesible). Reintento automático "
+               f"corriendo. NADA se perdió.")
     qs = f"/revision?hoja={hoja}&msg={msg}"
     for k, v in (("tabla", tabla), ("tipo", tipo), ("metodo", metodo),
                  ("conf", conf), ("rango", rango), ("desde", desde),
@@ -1379,6 +1371,40 @@ def revisar_hoja(
     if por_hoja != POR_HOJA_DEFAULT:
         qs += f"&por_hoja={por_hoja}"
     return RedirectResponse(qs, status_code=303)
+
+
+# ----------------------------------------------------- Sincronizar pendientes ---
+@app.get("/sincronizar", response_class=HTMLResponse)
+def sincronizar_pendientes(request: Request) -> str:
+    """Reintenta aplicar los lotes que quedaron en /app/pending/ porque la BD
+    estaba caída cuando el revisor los aprobó. NADA se pierde: el JSON queda
+    en disco hasta que se aplica.
+
+    También corre por cron cada 5 min (`sync_pendientes.py` en CLI mode), por
+    lo que este botón es para forzar el reintento manual cuando el revisor
+    ve la alerta y quiere asegurarse."""
+    usuario = usuario_actual(request)
+    import sync_pendientes as _sp
+    pendientes_antes = len(_sp.listar_pendientes())
+    r = _sp.procesar_pendientes()
+    pendientes_despues = len(_sp.listar_pendientes())
+
+    msg = (
+        f"Sincronización ejecutada · {pendientes_antes} lote(s) pendiente(s) "
+        f"al inicio · {r['lotes_ok']} aplicado(s) · {r['lotes_fallidos']} "
+        f"siguen pendientes · {r['filas_aplicadas']} filas aplicadas · "
+        f"{r['filas_ya_revisadas']} ya estaban procesadas"
+    )
+    cuerpo = (
+        "<h1>Sincronización del outbox</h1>"
+        f"<div class=aviso>{_e(msg)}</div>"
+        + ("<h2>Errores</h2><ul>"
+           + "".join(f"<li>{_e(e)}</li>" for e in r["errores"])
+           + "</ul>" if r["errores"] else "")
+        + f"<p>Pendientes ahora: <b>{pendientes_despues}</b></p>"
+        "<p><a href='/revision'>← volver a /revision</a></p>"
+    )
+    return _layout("Sincronizar", cuerpo, usuario=usuario)
 
 
 # ----------------------------------------------------------------- Reglas ---

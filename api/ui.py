@@ -150,6 +150,15 @@ input[type=date], input[type=text] { padding: 4px 8px; border: 1px solid #cdd5e0
              border-radius: 6px; background: #fff; color: #1d2330; font-size: 13px; }
 .btn-excel:hover { background: #f3f6fa; }
 
+/* Badge "outbox" — lotes aprobados que NO se sincronizaron con clásico (BD
+   caída u otro fallo). El JSON está en disco hasta que el cron / botón los
+   re-aplique. Color amarillo (advertencia) — no rojo (error). */
+.outbox-bad { display: inline-block; padding: 4px 12px; background: #fff3e0;
+              color: #9a6212; border: 1px solid #f0d9a8; border-radius: 20px;
+              text-decoration: none; font-size: 13px; font-weight: 600;
+              margin-left: 12px; }
+.outbox-bad:hover { background: #fde2c0; }
+
 /* /comparacion — cross matrix de humano vs IA */
 .matriz { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px;
           margin: 12px 0 24px; }

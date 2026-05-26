@@ -23,9 +23,13 @@ if ! python3 -c "import pymysql" 2>/dev/null; then
   apt-get update -qq && apt-get install -y -qq python3-pymysql
 fi
 
-# 1) directorio del monitor
-mkdir -p /opt/ia-mp/monitor
+# 1) directorios persistentes
+mkdir -p /opt/ia-mp/monitor /opt/ia-mp/pending
 chmod 755 /opt/ia-mp/monitor
+# /opt/ia-mp/pending recibe los JSON del outbox que escribe el panel container
+# (usuario 33:33 = www-data). Mismo dueño para que el panel pueda escribir.
+chown 33:33 /opt/ia-mp/pending
+chmod 775 /opt/ia-mp/pending
 
 # 2) permisos del .env (640: root puede leer, grupo del owner también, others no)
 if [ -f /opt/ia-mp/.env ]; then
@@ -43,6 +47,10 @@ ADD_BACKUP='0 4 * * 0 /usr/bin/rsync -a /opt/ia-mp/modelo_pactivo.joblib root@10
 # Purga clasificador_ia_backtest > 30d el primer domingo de cada mes a las 04:30.
 # Hace dump comprimido antes (reversible). Ver bin/purgar.sh para el detalle.
 ADD_PURGA='30 4 1-7 * 0 /bin/bash /opt/ia-mp/bin/purgar.sh'
+# Outbox: cada 5 min reintenta aplicar lotes pendientes a clásico. Si la
+# BD vuelve después de una caída, los JSON se procesan solos y NADA se
+# pierde de lo que el revisor aprobó en /revision.
+ADD_OUTBOX='*/5 * * * * cd /opt/ia-mp && /usr/bin/docker compose exec -T panel python /app/sync_pendientes.py >>/opt/ia-mp/monitor/sync.log 2>&1'
 
 # Greps específicos: "salud.py" sería substring de "monitor_salud.py" y no
 # instalaría el cron horario — usar la ruta completa para evitar la colisión.
@@ -51,6 +59,7 @@ grep -qF "/opt/ia-mp/monitor_salud.py" "$TMP" || echo "$ADD_MON" >> "$TMP"
 grep -qF "docker compose restart" "$TMP" || echo "$ADD_RESTART" >> "$TMP"
 grep -qF "rsync -a /opt/ia-mp/modelo" "$TMP" || echo "$ADD_BACKUP" >> "$TMP"
 grep -qF "/opt/ia-mp/bin/purgar.sh" "$TMP" || echo "$ADD_PURGA" >> "$TMP"
+grep -qF "sync_pendientes.py" "$TMP" || echo "$ADD_OUTBOX" >> "$TMP"
 
 crontab "$TMP"
 rm "$TMP"

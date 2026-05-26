@@ -35,8 +35,12 @@ services:
       - "8800:8800"
     # Carpeta de trabajo de los módulos Legacy: la misma que usaba Laravel en
     # gestor_oc (chunks, .log, reportes). En el host vive aquí desde siempre.
+    # /app/pending: outbox de aprobaciones que NO pudieron escribirse a clásico
+    # (BD caída) — el JSON queda en disco hasta que cron/botón lo reintenta.
+    # NADA de lo que el revisor aprueba se pierde aunque MySQL esté caído.
     volumes:
       - /var/www/html/gestor_oc/storage/app/temp:/host/storage/temp
+      - /opt/ia-mp/pending:/app/pending
     environment:
       LEGACY_TEMP_DIR: /host/storage/temp
     # www-data del host (UID:GID 33:33) es el dueño-de-grupo del directorio

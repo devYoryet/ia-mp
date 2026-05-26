@@ -123,12 +123,17 @@ def clasificar_fila(
     # (todos sus componentes en la descripción, sin importar el orden — el orden
     # lo fija el diccionario central); si no, el nombre simple de un pactivo.
     # comp/pres se leen de la GLOSA; el histórico de ese pactivo es el respaldo.
-    # El match de combinación va SOLO sobre la descripción, no el título (el
-    # título es el paraguas del tender y lista varios fármacos).
+    # IMPORTANTE: tanto match_combinacion como match_diccionario van SOLO sobre
+    # la DESCRIPCIÓN del ítem, NO sobre el título del tender. Razón medida en
+    # producción 2026-05-26: un tender llamado "BEVACIZUMAB" contiene un ítem
+    # cuya descripción es "MAG. POLIDOCANOL 1% AMPOLLA". Si leemos título +
+    # descripción, regla_diccionario matchea "Bevacizumab" del título y asigna
+    # mal el pactivo. El título es el paraguas del tender (puede listar varios
+    # fármacos); la descripción identifica el ÍTEM real.
     pactivo = reglas.match_combinacion(descripcion or "", combinaciones or [])
     por_combinacion = pactivo is not None
     if not pactivo:
-        pactivo = reglas.match_diccionario(texto, pactivos_norm)
+        pactivo = reglas.match_diccionario(descripcion or "", pactivos_norm)
     if pactivo:
         # VETO del modelo entrenado sobre el match SIMPLE de diccionario.
         # match_diccionario hace un match de texto contra un catálogo que
