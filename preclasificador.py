@@ -84,7 +84,10 @@ def buscar_en_historico(
 
 
 # --- composición/presentación dominantes de un pactivo en el histórico --------
-SIN_CLA = "Sin Cla"
+# COMODÍN "no se pudo inferir" — forma que usan los humanos. Distinto del valor
+# del catálogo "Sin Clas" (con s) que sí es composición real para Polivitamínico,
+# Oligoelementos, etc. y se asigna a través de comp_index/pres_index.
+SIN_CLA = "Sin cla"
 
 # Cache en memoria: {tabla: {pactivo_normalizado: (comp_dominante, pres_dominante)}}.
 # Se llena UNA vez al arrancar el worker con un solo GROUP BY por tabla. Así la

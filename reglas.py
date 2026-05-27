@@ -43,12 +43,16 @@ def normalizar_valor(texto: str | None) -> str:
     return normalizar(texto).replace(" ", "")
 
 
-# 'Sin Cla' (SIN s) — comodín que escribe el clasificador cuando no se puede
-# determinar la composición/presentación. NO es un valor del catálogo: es un
+# 'Sin cla' (SIN s, minúsculas) — COMODÍN que escribe el clasificador cuando no se
+# puede determinar la composición/presentación. NO es un valor del catálogo: es un
 # token de match NO ESTRICTO, para que la oportunidad igual le llegue al cliente
-# aunque la dosis no figure en mercadopublico.cl. Distinto de 'Sin Clas' (CON s),
-# que sí es una categoría real y literal del diccionario (match estricto).
-SIN_CLA = "Sin Cla"
+# aunque la dosis no figure en mercadopublico.cl. Esta es la forma que usan los
+# humanos en compra_agil/Licitaciones_diarias (~33k filas).
+# Distinto de 'Sin Clas' (CON s) — ése sí es una categoría REAL del catálogo Base
+# para pactivos como Polivitamínico, Oligoelementos, Lágrimas Artificiales, etc.,
+# donde la composición literalmente no aplica como número. Se asigna SOLO si viene
+# del catálogo (vía comp_index/pres_index), no como default cuando algo vino vacío.
+SIN_CLA = "Sin cla"
 
 
 def match_diccionario(texto: str, pactivos_norm: dict[str, str]) -> str | None:

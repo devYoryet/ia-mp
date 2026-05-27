@@ -33,9 +33,9 @@ _RE_VOLUMEN = re.compile(r"^\d[\d.,\s-]*(ml|cc)$", re.IGNORECASE)
 # Preparado magistral / reactivo: glosa tipo "PQ <droga> <rango> MG" (preparación
 # de quimioterapia a medida). El rango de mg es un bracket de CANTIDAD del lote,
 # NO una concentración — un preparado a medida no tiene dosis fija. Para esos la
-# composición es el comodín «Sin Cla» (match no-estricto). Verificado 2026-05-22.
+# composición es el comodín «Sin cla» (match no-estricto). Verificado 2026-05-22.
 _RE_MAGISTRAL = re.compile(r"\bpq\b.{0,40}\d+\s*-\s*\d+\s*mg\b", re.IGNORECASE)
-_COMODIN = "Sin Cla"
+_COMODIN = "Sin cla"
 
 
 @dataclass
@@ -63,7 +63,9 @@ class Taxonomia:
         """Canoniza composición/presentación SIN destruir valores válidos:
         - si el valor de la IA es un valor conocido del catálogo, usa su forma canónica;
         - si es uno nuevo (no visto), lo deja tal cual (es válido igual);
-        - si viene vacío, usa «Sin Clas» (lo que las personas ponen para 'sin dato')."""
+        - si viene vacío, usa el COMODÍN «Sin cla» (no «Sin Clas», que es un valor
+          REAL del catálogo para Polivitamínico/Oligoelementos/etc. y solo debe
+          asignarse cuando viene del catálogo, vía comp_index/pres_index)."""
         return (_snap(comp, self.comp_index), _snap(pres, self.pres_index))
 
     def extraer_de_glosa(self, texto: str, pactivo: str | None = None) -> tuple:
@@ -125,7 +127,7 @@ class Taxonomia:
 
 def _snap(valor: str | None, indice: dict) -> str:
     if not valor or not valor.strip():
-        return "Sin Clas"
+        return "Sin cla"
     return indice.get(normalizar_valor(valor)) or valor.strip()
 
 
