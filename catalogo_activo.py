@@ -38,6 +38,14 @@ log = logging.getLogger("catalogo_activo")
 # (PACTIVOS_NO_MATCH_DIRECTO) y `clasificador_claude.py` (prompt).
 WHITELIST = {"Adjunto"}
 
+# RUTs que NO se consideran clientes activos aunque tengan usuarios vivos en
+# `pharmatender.company`. Pharmatender (12345678-5) es la cuenta INTERNA de
+# la empresa — los users son del equipo (Yoryet, Fernando, Evelyn, etc.); no
+# es un cliente al que se le vende. Su `diccionario_unidad` contiene pactivos
+# de TESTING ("Guantes", "Guante", etc.) que NO deben contaminar el catálogo
+# activo. Verificado en producción 2026-05-27.
+BLACKLIST_RUTS = {"12345678-5"}
+
 
 def _conn(host: str, port: int, user: str, pw: str, db: str):
     return pymysql.connect(
@@ -63,7 +71,9 @@ def _ruts_activos_prime() -> set[str]:
                 "WHERE u.deleted_at IS NULL "
                 "GROUP BY c.id, c.rut HAVING COUNT(*) > 1"
             )
-            return {r["rut"].strip() for r in cur.fetchall() if r["rut"]}
+            ruts = {r["rut"].strip() for r in cur.fetchall() if r["rut"]}
+            # Quitar RUTs internos (Pharmatender misma, testing) — ver BLACKLIST_RUTS
+            return ruts - BLACKLIST_RUTS
     except Exception as exc:  # noqa: BLE001
         log.warning("No se pudo consultar prime (%s) — catálogo SIN filtro", exc)
         return set()
