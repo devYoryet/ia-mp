@@ -66,7 +66,7 @@ class Taxonomia:
         - si viene vacío, usa «Sin Clas» (lo que las personas ponen para 'sin dato')."""
         return (_snap(comp, self.comp_index), _snap(pres, self.pres_index))
 
-    def extraer_de_glosa(self, texto: str) -> tuple:
+    def extraer_de_glosa(self, texto: str, pactivo: str | None = None) -> tuple:
         """Lee composición (dosis) y presentación (forma) DIRECTAMENTE de la
         glosa y las canoniza con snap. Devuelve (comp|None, pres|None) — None
         cuando la glosa no la indica (ahí la cascada usa el respaldo histórico).
@@ -74,7 +74,13 @@ class Taxonomia:
         Sirve para la Etapa 2: cuando el match del diccionario da el pactivo, la
         dosis y la forma suelen estar escritas en el propio texto (ej.
         'KETOPROFENO 100 MG AMPOLLA') — leerlas de ahí es más fiel que el valor
-        más frecuente histórico del pactivo."""
+        más frecuente histórico del pactivo.
+
+        Si `pactivo` viene y es COMPUESTO (contiene '-' o '+' en el nombre), arma
+        la candidata combinando las primeras 2 dosis con '-' (separador del
+        catálogo: 'Olmesartan-Hidroclorotiazida' → '40-12,5mg'), y la usa solo si
+        existe en el catálogo. Si no, devuelve None para que el respaldo histórico
+        decida — no se inventan dosis libres."""
         t = normalizar(texto or "")
         if not t:
             return (None, None)
@@ -96,17 +102,54 @@ class Taxonomia:
 
         # composición: la dosis más relevante (se prefiere mg/UI/% sobre el volumen ml)
         dosis = [m.group(0).strip() for m in _RE_DOSIS.finditer(t)]
-        comp = None
-        if dosis:
-            fuertes = [d for d in dosis if not _RE_VOLUMEN.match(d)]
-            comp = (fuertes or dosis)[0]
-        return (_snap(comp, self.comp_index) if comp else None, pres_final)
+        if not dosis:
+            return (None, pres_final)
+        fuertes = [d for d in dosis if not _RE_VOLUMEN.match(d)]
+        efectivas = fuertes or dosis
+
+        # Pactivo compuesto: el catálogo guarda la concentración combinada con '-'
+        # (Olmesartan-Hidroclorotiazida → '40-12,5mg'). Tomar dosis[0] descarta la
+        # segunda componente. Si el pactivo lleva '-' o '+' en el nombre, armamos
+        # la candidata combinada y solo la aceptamos si existe en el catálogo;
+        # si no, devolvemos None y dejamos que el respaldo histórico decida.
+        if pactivo and ("-" in pactivo or "+" in pactivo) and len(efectivas) >= 2:
+            cand = _armar_compuesta(efectivas[:2])
+            if cand:
+                clave = normalizar_valor(cand)
+                if clave in self.comp_index:
+                    return (self.comp_index[clave], pres_final)
+                return (None, pres_final)
+
+        return (_snap(efectivas[0], self.comp_index), pres_final)
 
 
 def _snap(valor: str | None, indice: dict) -> str:
     if not valor or not valor.strip():
         return "Sin Clas"
     return indice.get(normalizar_valor(valor)) or valor.strip()
+
+
+_RE_DOSIS_PARTES = re.compile(
+    r"(\d+(?:[.,]\d+)?)\s*"
+    r"(mg/ml|mg/g|ui/ml|mg|mcg|ug|ui|%|g/l|g|ml|cc)",
+    re.IGNORECASE,
+)
+
+
+def _armar_compuesta(dosis_lista: list) -> str | None:
+    """Toma ['40MG', '12,5MG'] o ['440 MG', '50MG'] y arma '40-12,5mg' / '440-50mg'
+    (forma canónica que usa el catálogo para pactivos compuestos). Devuelve None
+    si las unidades difieren entre componentes — no se inventan combinaciones."""
+    pares = []
+    for d in dosis_lista:
+        m = _RE_DOSIS_PARTES.match(d.strip())
+        if not m:
+            return None
+        pares.append((m.group(1), m.group(2).lower()))
+    unidades = {u for _, u in pares}
+    if len(unidades) > 1:
+        return None
+    return "-".join(n for n, _ in pares) + pares[0][1]
 
 
 def cargar_taxonomia() -> Taxonomia:

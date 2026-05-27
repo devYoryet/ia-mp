@@ -160,7 +160,7 @@ def clasificar_fila(
                         f"(probabilidad {p_desc:.2f})."
                     ),
                 )
-        comp_g, pres_g = taxonomia.extraer_de_glosa(texto)
+        comp_g, pres_g = taxonomia.extraer_de_glosa(texto, pactivo)
         # De TODAS las (comp,pres) que existen para este pactivo en el histórico
         # humano, la que mejor encaja con esta descripción. Convierte comp/pres
         # de texto libre a opción dentro de la lista finita REAL del fármaco.
@@ -211,7 +211,7 @@ def clasificar_fila(
     if (pact_pred and conf >= config.umbral_modelo_pactivo
             and normalizar(pact_pred) not in {normalizar(p) for p in PACTIVOS_NO_MATCH_DIRECTO}
             and normalizar(pact_pred) in pactivos_norm):
-        comp_g, pres_g = taxonomia.extraer_de_glosa(texto)
+        comp_g, pres_g = taxonomia.extraer_de_glosa(texto, pact_pred)
         comp_o, pres_o = preclasificador.elegir_comp_pres_por_descripcion(
             tabla, pact_pred, descripcion
         )
