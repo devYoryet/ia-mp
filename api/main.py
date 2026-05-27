@@ -1556,6 +1556,339 @@ def sincronizar_pendientes(request: Request) -> str:
     return _layout("Sincronizar", cuerpo, usuario=usuario)
 
 
+# ----------------------------------------------------- Estadísticas / BI ---
+# Hitos manuales del sistema: cuando hicimos cada ajuste relevante. Se
+# muestran como marcadores verticales en los gráficos para que en
+# gerencia se vea "después de este cambio, la métrica X mejoró".
+_HITOS = [
+    ("2026-05-22", "Deploy inicial IA en producción"),
+    ("2026-05-22", "Capa opciones comp/pres por pactivo"),
+    ("2026-05-23", "Modelo de pactivo v1 (94.6%)"),
+    ("2026-05-24", "Cruce Base ampliado (+ analisis_precios.Base)"),
+    ("2026-05-25", "Modelo de pactivo umbral 0.40"),
+    ("2026-05-25", "Modelo entrenado (descarte+pactivo) consolidado"),
+    ("2026-05-26", "Catálogo activo (filtro clientes vivos)"),
+    ("2026-05-26", "Umbral modelo_pactivo bajado a 0.30"),
+    ("2026-05-26", "Match reglas usa solo descripción (no título)"),
+    ("2026-05-26", "Outbox de aprobaciones (no se pierde nada)"),
+    ("2026-05-27", "BLACKLIST Pharmatender interno"),
+    ("2026-05-27", "Regla 'Medio de Contraste' en sistema"),
+]
+
+
+@app.get("/estadisticas", response_class=HTMLResponse)
+def estadisticas(request: Request, tabla: str = "compra_agil",
+                 dias: int = 14) -> str:
+    """Dashboard con gráficos para presentar a gerencia:
+    - clasificaciones por día (humano vs IA, interés vs descarte)
+    - acierto IA vs humano por día
+    - costo Claude acumulado (test + producción)
+    - distribución por etapa de la cascada
+
+    Los datos los carga JS desde `/estadisticas.json` (más rápido refresh)."""
+    usuario = usuario_actual(request)
+    cuerpo = f"""
+<h1>Estadísticas IA · Pharmatender</h1>
+<div class=cards style="margin-bottom:14px">
+  <div class=card>
+    <label style='font-size:11px;color:#6b7689'>Tabla</label>
+    <select id=f_tabla onchange='cargar()'>
+      <option value='compra_agil'{' selected' if tabla == 'compra_agil' else ''}>Compras ágiles</option>
+      <option value='Licitaciones_diarias'{' selected' if tabla == 'Licitaciones_diarias' else ''}>Licitaciones</option>
+    </select>
+  </div>
+  <div class=card>
+    <label style='font-size:11px;color:#6b7689'>Días</label>
+    <select id=f_dias onchange='cargar()'>
+      <option value=7{' selected' if dias == 7 else ''}>7</option>
+      <option value=14{' selected' if dias == 14 else ''}>14</option>
+      <option value=30{' selected' if dias == 30 else ''}>30</option>
+      <option value=60{' selected' if dias == 60 else ''}>60</option>
+    </select>
+  </div>
+  <div class=card style='flex:2'>
+    <div id=resumen style='font-size:13px;color:#6b7689'>Cargando…</div>
+  </div>
+</div>
+
+<h2>1. Clasificaciones por día — humano vs IA</h2>
+<p style='font-size:12px;color:#6b7689'>Verde = interés, rojo = descarte. Líneas continuas = humanos (gestor_licitaciones). Líneas punteadas = sistema IA. Marcadores verticales = hitos donde ajustamos el sistema.</p>
+<div style='background:#fff;padding:16px;border-radius:10px;box-shadow:0 1px 3px rgba(0,0,0,.08);margin-bottom:18px'>
+  <canvas id=chart_clasif height=110></canvas>
+</div>
+
+<h2>2. Acierto IA vs humano</h2>
+<p style='font-size:12px;color:#6b7689'>% de filas donde la IA coincidió con la decisión del humano (interés o descarte). Se mide solo sobre filas que un humano ya revisó.</p>
+<div style='background:#fff;padding:16px;border-radius:10px;box-shadow:0 1px 3px rgba(0,0,0,.08);margin-bottom:18px'>
+  <canvas id=chart_acierto height=110></canvas>
+</div>
+
+<h2>3. Costo Claude acumulado</h2>
+<p style='font-size:12px;color:#6b7689'>Suma acumulada por día. Azul = producción (lo que pagamos al clasificar las nuevas). Naranja = backtest (experimentación). Presupuesto mensual: USD ${config.budget_usd:.0f}.</p>
+<div style='background:#fff;padding:16px;border-radius:10px;box-shadow:0 1px 3px rgba(0,0,0,.08);margin-bottom:18px'>
+  <canvas id=chart_costo height=110></canvas>
+</div>
+
+<h2>4. Distribución por etapa de la cascada</h2>
+<p style='font-size:12px;color:#6b7689'>Cada barra es un día. Las etapas baratas (cruce Base, histórico, modelos entrenados) resuelven el grueso; solo el residuo llega a Claude.</p>
+<div style='background:#fff;padding:16px;border-radius:10px;box-shadow:0 1px 3px rgba(0,0,0,.08);margin-bottom:18px'>
+  <canvas id=chart_metodo height=120></canvas>
+</div>
+
+<script src='https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js'></script>
+<script>
+let chs = {{}};
+async function cargar() {{
+  const tabla = document.getElementById('f_tabla').value;
+  const dias = document.getElementById('f_dias').value;
+  document.getElementById('resumen').textContent = 'Cargando…';
+  const r = await fetch('/estadisticas.json?tabla='+tabla+'&dias='+dias);
+  const d = await r.json();
+  document.getElementById('resumen').innerHTML = d.resumen_html;
+  // destroy charts previos
+  Object.values(chs).forEach(c => c && c.destroy());
+  chs = {{}};
+  renderClasif(d); renderAcierto(d); renderCosto(d); renderMetodo(d);
+}}
+
+function hitosAnnot(hitos) {{
+  // Líneas verticales sobre los días de hitos del sistema
+  return hitos.map(h => ({{
+    type: 'line', xMin: h.fecha, xMax: h.fecha,
+    borderColor: '#16263d', borderWidth: 1, borderDash: [4, 4],
+    label: {{ display: true, content: h.etiqueta, position: 'start',
+              backgroundColor: '#16263d', color: '#fff', font: {{size: 10}},
+              padding: 3, rotation: 90 }}
+  }}));
+}}
+
+function renderClasif(d) {{
+  chs.clasif = new Chart(document.getElementById('chart_clasif'), {{
+    type: 'line',
+    data: {{
+      labels: d.dias,
+      datasets: [
+        {{label:'Humano · interés', data:d.humano_interes, borderColor:'#1b6b3a', backgroundColor:'#1b6b3a', tension:0.3, pointRadius:3}},
+        {{label:'Humano · descarte', data:d.humano_descarte, borderColor:'#c0392b', backgroundColor:'#c0392b', tension:0.3, pointRadius:3}},
+        {{label:'IA · interés', data:d.ia_interes, borderColor:'#28a76f', borderDash:[6,3], tension:0.3, pointRadius:0}},
+        {{label:'IA · descarte', data:d.ia_descarte, borderColor:'#e57373', borderDash:[6,3], tension:0.3, pointRadius:0}},
+      ]
+    }},
+    options: {{
+      responsive: true, plugins: {{ legend: {{position:'bottom'}} }},
+      scales: {{ y: {{beginAtZero:true, title:{{display:true,text:'filas/día'}}}} }}
+    }}
+  }});
+}}
+
+function renderAcierto(d) {{
+  chs.acierto = new Chart(document.getElementById('chart_acierto'), {{
+    type: 'line',
+    data: {{
+      labels: d.dias,
+      datasets: [
+        {{label:'Acierto INTERÉS', data:d.acierto_int, borderColor:'#2f6fb0', backgroundColor:'#2f6fb030', tension:0.3, pointRadius:3, fill:false}},
+        {{label:'Acierto PACTIVO', data:d.acierto_pact, borderColor:'#d68910', backgroundColor:'#d6891020', tension:0.3, pointRadius:3, fill:false}},
+      ]
+    }},
+    options: {{
+      responsive: true, plugins: {{ legend: {{position:'bottom'}} }},
+      scales: {{ y: {{min:50, max:100, ticks:{{callback:v=>v+'%'}}, title:{{display:true,text:'% acuerdo'}}}} }}
+    }}
+  }});
+}}
+
+function renderCosto(d) {{
+  chs.costo = new Chart(document.getElementById('chart_costo'), {{
+    type: 'line',
+    data: {{
+      labels: d.dias,
+      datasets: [
+        {{label:'Producción acumulado', data:d.costo_prod_acum, borderColor:'#2f6fb0', backgroundColor:'#2f6fb030', tension:0.1, fill:true}},
+        {{label:'Backtest acumulado',   data:d.costo_test_acum, borderColor:'#d68910', backgroundColor:'#d6891030', tension:0.1, fill:true}},
+      ]
+    }},
+    options: {{
+      responsive: true, plugins: {{ legend: {{position:'bottom'}} }},
+      scales: {{ y: {{beginAtZero:true, title:{{display:true,text:'USD acumulado'}}, ticks:{{callback:v=>'$'+v}}}} }}
+    }}
+  }});
+}}
+
+function renderMetodo(d) {{
+  const palette = {{
+    'cruce_base':'#28a76f', 'historico':'#1b6b3a', 'descarte_item':'#9aaab8',
+    'modelo_descarte':'#5c7993', 'modelo_pactivo':'#2f6fb0',
+    'conflicto_regla_modelo':'#c0392b', 'regla_diccionario':'#f0a830',
+    'claude':'#7a45ad'
+  }};
+  const datasets = d.metodos.map(m => ({{
+    label: m.metodo, data: m.data, backgroundColor: palette[m.metodo] || '#888'
+  }}));
+  chs.metodo = new Chart(document.getElementById('chart_metodo'), {{
+    type: 'bar',
+    data: {{ labels: d.dias, datasets: datasets }},
+    options: {{
+      responsive: true, plugins:{{legend:{{position:'bottom'}}}},
+      scales: {{ x:{{stacked:true}}, y:{{stacked:true,title:{{display:true,text:'filas/día'}}}} }}
+    }}
+  }});
+}}
+
+cargar();
+</script>
+"""
+    return _layout("Estadísticas", cuerpo, usuario=usuario)
+
+
+@app.get("/estadisticas.json")
+def estadisticas_json(tabla: str = "compra_agil", dias: int = 14):
+    """JSON con todas las series para el dashboard. Una sola query batch."""
+    if tabla not in TABLAS_VALIDAS:
+        tabla = "compra_agil"
+    dias = max(7, min(90, dias))
+
+    # 1) Clasificaciones por día — HUMANO (en la tabla origen)
+    sql_humano = (
+        f"SELECT DATE(fecha_clasificacion) d, estado_gestor e, COUNT(*) n "
+        f"FROM `{tabla}` "
+        f"WHERE fecha_clasificacion >= NOW() - INTERVAL {dias} DAY "
+        "AND nombre_clasificador IS NOT NULL "
+        "AND nombre_clasificador NOT REGEXP '^(Bot|BOT|IA_|Bot Eliminado)' "
+        "GROUP BY d, e"
+    )
+    humano = _query(sql_humano)
+
+    # 2) Clasificaciones por día — IA (clasificador_ia_log)
+    sql_ia = (
+        "SELECT DATE(creado_en) d, interes_sugerido e, COUNT(*) n "
+        "FROM clasificador_ia_log "
+        f"WHERE tabla_origen = %s AND creado_en >= NOW() - INTERVAL {dias} DAY "
+        "GROUP BY d, e"
+    )
+    ia = _query(sql_ia, (tabla,))
+
+    # 3) Acierto IA vs humano (sobre filas comparables)
+    sql_acierto = (
+        "SELECT DATE(t.fecha_clasificacion) d, COUNT(*) n, "
+        "SUM(log.interes_sugerido = t.estado_gestor) a_int, "
+        "SUM(log.interes_sugerido=1 AND t.estado_gestor=1) ambos_int, "
+        "SUM(log.interes_sugerido=1 AND t.estado_gestor=1 "
+        "    AND log.pactivo_sugerido = t.pactivo) a_pact "
+        f"FROM clasificador_ia_log log JOIN `{tabla}` t ON t.id = log.fila_id "
+        f"WHERE log.tabla_origen = %s "
+        f"AND t.fecha_clasificacion >= NOW() - INTERVAL {dias} DAY "
+        "AND t.nombre_clasificador IS NOT NULL "
+        "AND t.nombre_clasificador NOT REGEXP '^(Bot|BOT|IA_|Bot Eliminado)' "
+        "GROUP BY d"
+    )
+    acierto = _query(sql_acierto, (tabla,))
+
+    # 4) Costo Claude por día — test / producción
+    sql_costo = (
+        "SELECT DATE(creado_en) d, contexto, SUM(costo_usd) c "
+        f"FROM clasificador_ia_costos "
+        f"WHERE creado_en >= NOW() - INTERVAL {dias} DAY "
+        "GROUP BY d, contexto"
+    )
+    costo = _query(sql_costo)
+
+    # 5) Por método por día (stacked)
+    sql_met = (
+        "SELECT DATE(creado_en) d, metodo, COUNT(*) n "
+        "FROM clasificador_ia_log "
+        f"WHERE tabla_origen = %s AND creado_en >= NOW() - INTERVAL {dias} DAY "
+        "GROUP BY d, metodo"
+    )
+    metodos_rows = _query(sql_met, (tabla,))
+
+    # Construye lista de días continuos para que los charts no tengan huecos
+    from datetime import timedelta
+    hoy = datetime.now().date()
+    dias_lista = [str(hoy - timedelta(days=i)) for i in range(dias - 1, -1, -1)]
+
+    def map_por_dia(rows, key="d"):
+        return {str(r[key]): r for r in rows}
+
+    # Series humano
+    h_int = {str(r["d"]): int(r["n"]) for r in humano if r.get("e") == 1}
+    h_des = {str(r["d"]): int(r["n"]) for r in humano if r.get("e") == 0}
+    # Series IA
+    i_int = {str(r["d"]): int(r["n"]) for r in ia if r.get("e") == 1}
+    i_des = {str(r["d"]): int(r["n"]) for r in ia if r.get("e") == 0}
+    # Acierto
+    acc_int = {}
+    acc_pact = {}
+    for r in acierto:
+        d = str(r["d"])
+        n = r.get("n") or 0
+        if n:
+            acc_int[d] = round((r.get("a_int") or 0) / n * 100, 1)
+        ai = r.get("ambos_int") or 0
+        if ai:
+            acc_pact[d] = round((r.get("a_pact") or 0) / ai * 100, 1)
+    # Costo acumulado (test y producción se grafican por separado, suma acumulada)
+    costo_prod_dia = {str(r["d"]): float(r["c"]) for r in costo if r["contexto"] == "produccion"}
+    costo_test_dia = {str(r["d"]): float(r["c"]) for r in costo if r["contexto"] == "test"}
+    costo_prod_acum, costo_test_acum, acum_p, acum_t = [], [], 0.0, 0.0
+    for d in dias_lista:
+        acum_p += costo_prod_dia.get(d, 0.0)
+        acum_t += costo_test_dia.get(d, 0.0)
+        costo_prod_acum.append(round(acum_p, 3))
+        costo_test_acum.append(round(acum_t, 3))
+    # Métodos: armar estructura {metodo: {dia: count}} y devolver una serie por método
+    metodos_set = sorted({r["metodo"] or "" for r in metodos_rows})
+    met_dict = {m: {d: 0 for d in dias_lista} for m in metodos_set}
+    for r in metodos_rows:
+        m = r["metodo"] or ""
+        d = str(r["d"])
+        if d in met_dict[m]:
+            met_dict[m][d] = int(r["n"])
+    metodos_series = [
+        {"metodo": m, "data": [met_dict[m][d] for d in dias_lista]}
+        for m in metodos_set
+    ]
+
+    # Resumen humano-legible
+    tot_humano = sum(h_int.values()) + sum(h_des.values())
+    tot_ia = sum(i_int.values()) + sum(i_des.values())
+    costo_total_prod = sum(costo_prod_dia.values())
+    costo_total_test = sum(costo_test_dia.values())
+    # Acierto promedio ponderado
+    n_acc_int, n_total, n_pact, ambos = 0, 0, 0, 0
+    for r in acierto:
+        n_acc_int += r.get("a_int") or 0
+        n_total += r.get("n") or 0
+        n_pact += r.get("a_pact") or 0
+        ambos += r.get("ambos_int") or 0
+    acc_global_int = f"{n_acc_int/n_total*100:.1f}%" if n_total else "—"
+    acc_global_pact = f"{n_pact/ambos*100:.1f}%" if ambos else "—"
+    resumen_html = (
+        f"<b>{tabla}</b> · últimos <b>{dias} días</b> &nbsp;|&nbsp; "
+        f"Humano clasificó: <b>{tot_humano:,}</b> &nbsp; "
+        f"IA clasificó: <b>{tot_ia:,}</b> &nbsp;|&nbsp; "
+        f"Acierto interés: <b>{acc_global_int}</b> &nbsp; "
+        f"Acierto pactivo: <b>{acc_global_pact}</b> &nbsp;|&nbsp; "
+        f"Costo prod: <b>${costo_total_prod:.2f}</b> &nbsp; "
+        f"backtest: <b>${costo_total_test:.2f}</b>"
+    )
+
+    return JSONResponse({
+        "dias": dias_lista,
+        "humano_interes": [h_int.get(d, 0) for d in dias_lista],
+        "humano_descarte": [h_des.get(d, 0) for d in dias_lista],
+        "ia_interes": [i_int.get(d, 0) for d in dias_lista],
+        "ia_descarte": [i_des.get(d, 0) for d in dias_lista],
+        "acierto_int": [acc_int.get(d) for d in dias_lista],
+        "acierto_pact": [acc_pact.get(d) for d in dias_lista],
+        "costo_prod_acum": costo_prod_acum,
+        "costo_test_acum": costo_test_acum,
+        "metodos": metodos_series,
+        "hitos": [{"fecha": f, "etiqueta": e} for f, e in _HITOS],
+        "resumen_html": resumen_html,
+    })
+
+
 # ----------------------------------------------------------------- Reglas ---
 @app.get("/reglas", response_class=HTMLResponse)
 def reglas(request: Request, msg: str = "") -> str:

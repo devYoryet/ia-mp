@@ -179,6 +179,7 @@ input[type=date], input[type=text] { padding: 4px 8px; border: 1px solid #cdd5e0
 # Items del nav. Si se agrega una sección al panel, se suma acá.
 NAV = (
     ("Resumen", "/"),
+    ("Estadísticas", "/estadisticas"),
     ("Backtest", "/comparacion"),
     ("Cola de revisión", "/revision"),
     ("Reglas", "/reglas"),
