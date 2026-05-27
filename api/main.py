@@ -507,6 +507,9 @@ _TIPOS = {
 _LEGACY_COLS = {
     "compra_agil": [
         # (header_legacy, columna_sql_en_compra_agil)
+        # Quitadas (no aplican en compra ágil, son propias de licitaciones):
+        #   Duración Contrato, Precio Ponderación, Tiempo del contrato,
+        #   Garantía seriedad ofertas, Garantía seriedad contrato.
         ("Demandante", "Demandante"),
         ("Unidad de compra", "Unidad_Compra"),
         ("Región", "Region"),
@@ -521,11 +524,6 @@ _LEGACY_COLS = {
         ("Item", "Item"),
         ("Descripción PHT", "VINCULOS"),
         ("Rut Cliente", "Rut_Cliente"),
-        ("Duración Contrato", "Duracion_Contrato"),
-        ("Precio Ponderación", "Precio_Ponderacion"),
-        ("Tiempo del contrato", "Tiempo_Contrato"),
-        ("Garantía seriedad ofertas", "Garantia_Seriedad_Ofertas"),
-        ("Garantía seriedad contrato", "Garantia_Seriedad_Contrato"),
         ("Pactivo", "pactivo"),
         ("Composición", "composicion"),
         ("Presentación", "presentacion"),
