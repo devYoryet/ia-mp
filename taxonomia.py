@@ -50,6 +50,10 @@ class Taxonomia:
     # set(comp_canónica)}. Lo usa el validador final para confirmar que la comp
     # asignada existe para ese pactivo y no es un volumen/dosis inventado.
     comp_por_pactivo: dict = field(default_factory=dict)
+    # presentaciones VÁLIDAS por pactivo (de Base + diccionario): mismo uso que
+    # comp_por_pactivo pero para la presentación (el validador rechaza p.ej.
+    # 'Caja' para un pactivo cuya forma real es 'Comprimido').
+    pres_por_pactivo: dict = field(default_factory=dict)
 
     def texto_para_prompt(self) -> str:
         """Bloque estable para el system prompt (se cachea con prompt caching)."""
@@ -204,6 +208,7 @@ def cargar_taxonomia() -> Taxonomia:
     comp_index: dict[str, str] = {}
     pres_index: dict[str, str] = {}
     comp_por_pactivo: dict[str, set] = {}
+    pres_por_pactivo: dict[str, set] = {}
 
     def _registrar(p, c, m):
         if p and p.strip():
@@ -214,6 +219,8 @@ def cargar_taxonomia() -> Taxonomia:
                 comp_por_pactivo.setdefault(normalizar(p), set()).add(c.strip())
         if m and m.strip():
             pres_index.setdefault(normalizar_valor(m), m.strip())
+            if p and p.strip():
+                pres_por_pactivo.setdefault(normalizar(p), set()).add(m.strip())
 
     with conn.cursor() as cur:
         # 1) catálogo PRIMARIO — 0001_td_oc.Base
@@ -265,6 +272,7 @@ def cargar_taxonomia() -> Taxonomia:
         comp_index=comp_index,
         pres_index=pres_index,
         comp_por_pactivo=comp_por_pactivo,
+        pres_por_pactivo=pres_por_pactivo,
     )
     if filtro_activo is not None:
         import logging

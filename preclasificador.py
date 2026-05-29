@@ -280,3 +280,31 @@ def canonizar_comp(tax, tabla: str, pactivo: Optional[str], comp: Optional[str])
     if not hay:
         return comp  # pactivo sin comps conocidas — no validar (no romper)
     return mapa.get(_unif_decimal(nv), "Sin cla")
+
+
+def canonizar_pres(tax, tabla: str, pactivo: Optional[str], pres: Optional[str]) -> Optional[str]:
+    """VALIDADOR FINAL de presentación (análogo a canonizar_comp, sin decimal).
+    Confirma que la presentación exista para el pactivo (Base + diccionario +
+    histórico humano). Si no existe (p.ej. 'Caja' para un pactivo cuya forma real
+    es 'Comprimido') → 'Sin cla'. Pactivo sin presentaciones conocidas → no toca."""
+    if not pres or not pres.strip():
+        return pres
+    nv = normalizar_valor(pres)
+    if nv in ("sincla", "sinclas"):
+        return pres
+    pact_n = normalizar(pactivo or "")
+    if not pact_n:
+        return pres
+    mapa: dict = {}
+    hay = False
+    for m in sorted(getattr(tax, "pres_por_pactivo", {}).get(pact_n, set())):
+        if m and m.strip():
+            hay = True
+            mapa.setdefault(normalizar_valor(m), m.strip())
+    for _c, p, _n in _COMP_PRES_OPCIONES.get(tabla, {}).get(pact_n, []):
+        if p and p.strip():
+            hay = True
+            mapa.setdefault(normalizar_valor(p), p.strip())
+    if not hay:
+        return pres
+    return mapa.get(nv, "Sin cla")

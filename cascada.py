@@ -105,10 +105,15 @@ def clasificar_fila(
         tabla, fila, taxonomia, pactivos_norm, descartes, cruce, combinaciones,
         modelo_descarte, ejemplos, indice_inverso, modelo_pactivo,
     )
-    if r.interes == 1 and r.pactivo and r.composicion:
-        r.composicion = preclasificador.canonizar_comp(
-            taxonomia, tabla, r.pactivo, r.composicion
-        )
+    if r.interes == 1 and r.pactivo:
+        if r.composicion:
+            r.composicion = preclasificador.canonizar_comp(
+                taxonomia, tabla, r.pactivo, r.composicion
+            )
+        if r.presentacion:
+            r.presentacion = preclasificador.canonizar_pres(
+                taxonomia, tabla, r.pactivo, r.presentacion
+            )
     return r
 
 
