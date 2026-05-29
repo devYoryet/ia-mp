@@ -221,8 +221,11 @@ def _select(nombre: str, fila_n: int, clase: str, valor: str, opciones: list) ->
 
 # ---------------------------------------------------------------- Resumen ---
 @app.get("/", response_class=HTMLResponse)
-def resumen(request: Request) -> str:
+def resumen(request: Request):
     usuario = usuario_actual(request)
+    # Los aprobadores no ven el resumen (gastos/métricas): van directo a la cola.
+    if not _ve_gastos(usuario):
+        return RedirectResponse("/revision", status_code=303)
     try:
         log = _query(
             "SELECT COUNT(*) n, SUM(revisado=0) pend, SUM(revisado=1) rev, "
@@ -890,6 +893,7 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
              desde: str = "", hasta: str = "",
              busqueda: str = "", licitacion: str = "") -> str:
     usuario = usuario_actual(request)
+    es_admin = _es_admin(usuario)
     hoja = max(1, hoja)
     por_hoja = por_hoja if por_hoja in POR_HOJA_OPCIONES else POR_HOJA_DEFAULT
     estado = estado if estado in _ESTADOS else "pendientes"
@@ -947,13 +951,48 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
             cond.append("1=0")  # nada encontrado → no devuelve nada
         else:
             cond.append("(" + " OR ".join(partes) + ")")
+    # COLA SINCRONIZADA CON EL LEGACY: una fila que un HUMANO ya clasificó o
+    # descartó en gestor_licitaciones (estado_gestor seteado + firma humana) ya
+    # está resuelta — NO debe aparecer pendiente acá, aunque la IA la procesó.
+    # Los dos sistemas corren en paralelo. Es un EXISTS correlacionado por PK (id)
+    # contra la MISMA BD del clásico — NO hay llamada a otro sistema; es un index
+    # lookup, no se "queda pegado". El worker IA igual procesa TODO (esté o no
+    # clasificado en el legacy); esto solo filtra lo que el revisor VE como pendiente.
+    if estado == "pendientes":
+        cond.append(
+            "NOT EXISTS (SELECT 1 FROM compra_agil ca "
+            "WHERE ca.id=clasificador_ia_log.fila_id "
+            "AND clasificador_ia_log.tabla_origen='compra_agil' "
+            "AND ca.estado_gestor IS NOT NULL AND ca.nombre_clasificador IS NOT NULL "
+            "AND ca.nombre_clasificador NOT REGEXP '^(Bot|BOT|IA_|Bot Eliminado)')"
+        )
+        cond.append(
+            "NOT EXISTS (SELECT 1 FROM Licitaciones_diarias ld "
+            "WHERE ld.id=clasificador_ia_log.fila_id "
+            "AND clasificador_ia_log.tabla_origen='Licitaciones_diarias' "
+            "AND ld.estado_gestor IS NOT NULL AND ld.nombre_clasificador IS NOT NULL "
+            "AND ld.nombre_clasificador NOT REGEXP '^(Bot|BOT|IA_|Bot Eliminado)')"
+        )
     where = " AND ".join(cond)
     # Para REVISADAS ordeno por revisado_en DESC (lo más recientemente cerrado
     # primero — es lo que el revisor quiere ver para auditar). Para pendientes,
     # ordeno PRIMERO por supergrupo (interés cruce histórico va primero,
     # claude/conflictos al final) — el revisor procesa por bloques afines.
+    # Subconsulta correlacionada: la fecha de cierre vive en la tabla origen.
+    _SQL_CIERRE = (
+        "COALESCE("
+        "(SELECT ca.Fecha_Cierre FROM compra_agil ca WHERE ca.id=clasificador_ia_log.fila_id "
+        "AND clasificador_ia_log.tabla_origen='compra_agil'),"
+        "(SELECT ld.Fecha_Cierre FROM Licitaciones_diarias ld WHERE ld.id=clasificador_ia_log.fila_id "
+        "AND clasificador_ia_log.tabla_origen='Licitaciones_diarias'))"
+    )
     if estado == "revisadas":
         orden = "revisado_en DESC"
+    elif not es_admin:
+        # APROBADORES: orden GLOBAL por fecha de cierre más próxima (urgente
+        # clasificar lo que cierra antes). Sin fecha → al final. La cola ya viene
+        # acotada por el filtro legacy, así que el costo del ORDER es bajo.
+        orden = f"{_SQL_CIERRE} IS NULL, {_SQL_CIERRE} ASC"
     else:
         # Orden compuesto por supergrupo (lógico en SQL: CASE WHEN) — evita
         # re-ordenar en Python después. El orden por confianza adentro de cada
@@ -1003,12 +1042,13 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
             ph = ",".join(["%s"] * len(ids))
             try:
                 for r in _query(
-                    f"SELECT id, Licitacion, Fecha_Cierre, VINCULOS FROM `{t}` "
-                    f"WHERE id IN ({ph})", tuple(ids)
+                    f"SELECT id, Licitacion, Fecha_Cierre, Fecha_Publicacion, "
+                    f"VINCULOS FROM `{t}` WHERE id IN ({ph})", tuple(ids)
                 ):
                     num_lic[(t, r["id"])] = r["Licitacion"]
                     info_origen[(t, r["id"])] = {
                         "cierre": r.get("Fecha_Cierre"),
+                        "publicacion": r.get("Fecha_Publicacion"),
                         "vinculos": r.get("VINCULOS"),
                     }
             except Exception:  # noqa: BLE001
@@ -1156,18 +1196,7 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
     # VISTA según usuario: el admin (quien afina) ve la técnica con badges de
     # confianza/vía/entrenamiento — le dice de dónde viene el error. El resto
     # (aprobadores) ve la vista LIMPIA: solo color + descripción + datos para
-    # decidir, ordenada por fecha de cierre más próxima (urgente).
-    es_admin = _es_admin(usuario)
-    if not es_admin and estado == "pendientes":
-        import datetime as _dt
-        _tope = _dt.datetime.max
-        def _orden_cierre(f):
-            c = info_origen.get((f["tabla_origen"], f["fila_id"]), {}).get("cierre")
-            if not isinstance(c, _dt.datetime):
-                return (1, _tope)  # sin fecha de cierre → al final
-            return (0, c)
-        filas = sorted(filas, key=_orden_cierre)
-
+    # decidir. El orden por fecha de cierre ya viene del SQL (global, no por hoja).
     bloques = []
     grupo_actual = None
     for n, f in enumerate(filas):
@@ -1206,8 +1235,11 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
                     ent = f" · <span class='badge b-ent-i'>entrenamiento: INTERÉS {1 - pd:.2f}</span>"
 
         _lic_txt = _e(num_lic.get((f["tabla_origen"], f["fila_id"])) or "—")
-        _cierre = info_origen.get((f["tabla_origen"], f["fila_id"]), {}).get("cierre")
+        _oinfo = info_origen.get((f["tabla_origen"], f["fila_id"]), {})
+        _cierre = _oinfo.get("cierre")
         _cierre_txt = _fmt_dt(_cierre) if _cierre else "—"
+        _pub = _oinfo.get("publicacion")
+        _pub_txt = _fmt_dt(_pub) if _pub else "—"
 
         if es_admin:
             # Encabezado TÉCNICO con timestamps. Para revisadas suma quién y cuándo.
@@ -1232,6 +1264,7 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
             meta_html = (
                 f"<div class='meta meta-aprob'>"
                 f"<b class=ap-lic>N° {_lic_txt}</b>"
+                f"<span class=ap-pub>publicada: {_pub_txt}</span>"
                 f"<span class=ap-cierre>cierra: {_cierre_txt}</span>"
                 + (
                     f"<span class=ap-rev>revisada por {_e(f.get('revisado_por') or '—')}</span>"
@@ -1332,7 +1365,7 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
                 f"<div class='desc desc-aprob'>{_e((f.get('descripcion') or '')[:500])}</div>"
                 + vinc_html + aviso_nuevo + edicion
                 + f"<button type=button class=ap-bajo onclick='aprobarDesde({n})'>"
-                "✓ aprobar de aquí hacia abajo</button>"
+                "✓ aprobar de aquí hacia arriba (lo ya revisado)</button>"
                 + "</div>"
             )
 
@@ -1483,11 +1516,12 @@ function marcarTodos(estado){
   });
   actualizarCuenta();
 }
-// Vista de aprobación: tildar de esta fila hacia abajo (revisé hasta acá, el
-// resto lo apruebo en bloque). Las filas ya vienen ordenadas por fecha de cierre.
+// Vista de aprobación: tildar de esta fila HACIA ARRIBA (todo lo que ya revisé
+// bajando queda aprobado; lo de abajo, que aún no vi, no se toca). Las filas
+// vienen ordenadas por fecha de cierre más próxima.
 function aprobarDesde(n){
   document.querySelectorAll('.fila[data-row]').forEach(function(f){
-    if(parseInt(f.dataset.row,10) >= n){
+    if(parseInt(f.dataset.row,10) <= n){
       var cb=f.querySelector('input.marcar');
       if(cb){cb.checked=true; aplicarEstadoMarca(cb);}
     }

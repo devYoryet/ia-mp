@@ -67,6 +67,10 @@ tr + tr td { border-top: 1px solid #eef1f4; }
         background: #eaf4ec; color: #1b6b3a; border: 1px solid #bfe0c8;
         border-radius: 6px; cursor: pointer; }
 .fila-aprob .ap-bajo:hover { background: #d8ecdd; }
+.fila-aprob .ap-pub { color: #6b7689; }
+/* La casilla de pactivo debe mostrar el nombre completo (no cortarlo): los
+   compuestos son largos ("Sulfametoxazol-Trimetoprima"). */
+.fila-aprob .f-pactivo { min-width: 320px; }
 .fila .meta { font-size: 12px; color: #6b7689; }
 .fila .desc { font-size: 14px; margin: 4px 0 4px; }
 .fila .razon { font-size: 12px; color: #6b7689; font-style: italic; margin-bottom: 8px; }
@@ -205,6 +209,15 @@ NAV = (
     ("Legacy", "/legacy"),
 )
 
+# Quiénes ven el panel COMPLETO (resumen de gastos, estadísticas, backtest,
+# reglas, legacy). El resto son APROBADORES: solo la cola de revisión, y al
+# ingresar van directo a /revision. Debe coincidir con _EMAILS_GASTOS en main.py.
+_EMAILS_PANEL_COMPLETO = {
+    "y.danoun@pharmatender.cl",
+    "m.moraga@pharmatender.cl",
+    "m.saavedra@pharmatender.cl",
+}
+
 
 def escape(v) -> str:
     return html.escape("" if v is None else str(v))
@@ -220,7 +233,10 @@ def _iniciales(nombre: str) -> str:
 
 
 def layout(titulo: str, cuerpo: str, usuario: dict | None = None) -> str:
-    nav = "".join(f"<a href='{h}'>{escape(t)}</a>" for t, h in NAV)
+    # Aprobadores (no panel-completo): nav reducido a la cola de revisión.
+    _email = ((usuario or {}).get("email") or "").strip().lower()
+    _items = NAV if _email in _EMAILS_PANEL_COMPLETO else (("Cola de revisión", "/revision"),)
+    nav = "".join(f"<a href='{h}'>{escape(t)}</a>" for t, h in _items)
     if usuario and usuario.get("name"):
         chip = (
             f"<span class='usuario'>"
