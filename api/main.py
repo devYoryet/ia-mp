@@ -1043,13 +1043,14 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
             try:
                 for r in _query(
                     f"SELECT id, Licitacion, Fecha_Cierre, Fecha_Publicacion, "
-                    f"VINCULOS FROM `{t}` WHERE id IN ({ph})", tuple(ids)
+                    f"Titulo, Demandante FROM `{t}` WHERE id IN ({ph})", tuple(ids)
                 ):
                     num_lic[(t, r["id"])] = r["Licitacion"]
                     info_origen[(t, r["id"])] = {
                         "cierre": r.get("Fecha_Cierre"),
                         "publicacion": r.get("Fecha_Publicacion"),
-                        "vinculos": r.get("VINCULOS"),
+                        "titulo": r.get("Titulo"),
+                        "demandante": r.get("Demandante"),
                     }
             except Exception:  # noqa: BLE001
                 pass
@@ -1240,6 +1241,8 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
         _cierre_txt = _fmt_dt(_cierre) if _cierre else "—"
         _pub = _oinfo.get("publicacion")
         _pub_txt = _fmt_dt(_pub) if _pub else "—"
+        _dem = (_oinfo.get("demandante") or "").strip()
+        _tit = (_oinfo.get("titulo") or "").strip()
 
         if es_admin:
             # Encabezado TÉCNICO con timestamps. Para revisadas suma quién y cuándo.
@@ -1266,6 +1269,7 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
                 f"<b class=ap-lic>N° {_lic_txt}</b>"
                 f"<span class=ap-pub>publicada: {_pub_txt}</span>"
                 f"<span class=ap-cierre>cierra: {_cierre_txt}</span>"
+                + (f"<span class=ap-dem>{_e(_dem[:70])}</span>" if _dem else "")
                 + (
                     f"<span class=ap-rev>revisada por {_e(f.get('revisado_por') or '—')}</span>"
                     if revisada else ""
@@ -1349,12 +1353,11 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
                 + aviso_nuevo + edicion + "</div>"
             )
         else:
-            # Vista de aprobación: descripción protagonista, luego VINCULOS,
-            # luego edición. Botón para tildar de esta fila hacia abajo.
-            vinc = (info_origen.get((f["tabla_origen"], f["fila_id"]), {}).get("vinculos") or "").strip()
-            vinc_html = (
-                f"<div class=ap-vinc><span class=ap-tag>Vínculos</span> {_e(vinc[:500])}</div>"
-                if vinc else ""
+            # Vista de aprobación: descripción protagonista, luego el TÍTULO del
+            # tender, luego edición. Botón para tildar de esta fila hacia arriba.
+            tit_html = (
+                f"<div class=ap-titulo><span class=ap-tag>Título</span> {_e(_tit[:300])}</div>"
+                if _tit else ""
             )
             bloques.append(
                 f"<div class='fila fila-aprob {tipo_cls}' data-row='{n}'>"
@@ -1363,7 +1366,7 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
                 f"data-row='{n}' checked>"
                 f"{meta_html}</div>"
                 f"<div class='desc desc-aprob'>{_e((f.get('descripcion') or '')[:500])}</div>"
-                + vinc_html + aviso_nuevo + edicion
+                + tit_html + aviso_nuevo + edicion
                 + f"<button type=button class=ap-bajo onclick='aprobarDesde({n})'>"
                 "✓ aprobar de aquí hacia arriba (lo ya revisado)</button>"
                 + "</div>"
