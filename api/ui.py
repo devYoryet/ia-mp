@@ -76,6 +76,16 @@ tr + tr td { border-top: 1px solid #eef1f4; }
    composición "160-5-12,5mg"). */
 .fila-aprob .f-pactivo { min-width: 320px; }
 .fila-aprob .f-comp { min-width: 150px; }
+/* Combobox de pactivo: dropdown propio anclado DEBAJO del campo (reemplaza el
+   datalist nativo que ocupaba toda la pantalla). Filtra al teclear, con scroll. */
+.pac-wrap { position: relative; display: inline-block; }
+.pac-dd { position: absolute; top: calc(100% + 2px); left: 0; z-index: 60; display: none;
+        min-width: 320px; max-width: 460px; max-height: 280px; overflow-y: auto;
+        background: #fff; border: 1px solid #c3ccda; border-radius: 7px;
+        box-shadow: 0 6px 18px rgba(0,0,0,.18); }
+.pac-dd.open { display: block; }
+.pac-dd .opt { padding: 6px 11px; cursor: pointer; font-size: 13px; white-space: nowrap; }
+.pac-dd .opt:hover { background: #eaf2fb; }
 .fila .meta { font-size: 12px; color: #6b7689; }
 .fila .desc { font-size: 14px; margin: 4px 0 4px; }
 .fila .razon { font-size: 12px; color: #6b7689; font-style: italic; margin-bottom: 8px; }

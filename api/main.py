@@ -1369,9 +1369,10 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
             "<option value=corregir>Corregir</option>"
             "<option value=descartar>Descartar</option></select>"
             "<label>pactivo</label>"
-            f"<input name=pactivo class=f-pactivo list=lista_pactivos data-row='{n}' "
-            f"data-sug=\"{_e(f.get('pactivo_sugerido'))}\" "
+            f"<span class=pac-wrap><input name=pactivo class=f-pactivo autocomplete=off "
+            f"data-row='{n}' data-sug=\"{_e(f.get('pactivo_sugerido'))}\" "
             f"value=\"{_e(f.get('pactivo_sugerido'))}\">"
+            f"<div class=pac-dd data-row='{n}'></div></span>"
             "<label>comp</label>"
             + _select("composicion", n, "f-comp", f.get("composicion_sugerida"), comps)
             + "<label>pres</label>"
@@ -1535,6 +1536,38 @@ document.querySelectorAll('.fila[data-row]').forEach(function(f){
   if(e.pac){e.pac.addEventListener('change',function(){alCambiarPactivo(n);});}
   if(e.com){e.com.addEventListener('change',function(){marcar(n);});}
   if(e.pre){e.pre.addEventListener('change',function(){marcar(n);});}
+});
+
+// COMBOBOX de pactivo: dropdown propio anclado DEBAJO del campo (el <datalist>
+// nativo de Chrome ocupaba toda la pantalla). Filtra al teclear, con scroll.
+var PACTIVOS = Array.prototype.map.call(
+  document.querySelectorAll('#lista_pactivos option'), function(o){return o.value;});
+function pacFiltrar(inp){
+  var dd = inp.parentNode.querySelector('.pac-dd');
+  if(!dd) return;
+  var q = inp.value.trim().toLowerCase();
+  var res = PACTIVOS.filter(function(p){return p.toLowerCase().indexOf(q) >= 0;}).slice(0, 60);
+  dd.innerHTML = res.map(function(p){
+    return '<div class=opt>' + p.replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</div>';
+  }).join('');
+  dd.classList.add('open');
+  Array.prototype.forEach.call(dd.querySelectorAll('.opt'), function(o){
+    o.addEventListener('mousedown', function(ev){
+      ev.preventDefault();           // antes del blur, para alcanzar a setear
+      inp.value = o.textContent;
+      dd.classList.remove('open');
+      alCambiarPactivo(inp.dataset.row);  // recarga comp/pres + marca "corregir"
+    });
+  });
+}
+document.querySelectorAll('input.f-pactivo').forEach(function(inp){
+  inp.addEventListener('focus', function(){pacFiltrar(inp);});
+  inp.addEventListener('input', function(){pacFiltrar(inp);});
+  inp.addEventListener('blur', function(){
+    setTimeout(function(){
+      var dd = inp.parentNode.querySelector('.pac-dd'); if(dd) dd.classList.remove('open');
+    }, 180);
+  });
 });
 
 // Checkbox por fila: tildada = se procesa (aprobar/corregir/descartar segun el
