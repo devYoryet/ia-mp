@@ -60,6 +60,20 @@ _EMAILS_GASTOS = {
 }
 
 
+def _norm_fecha(v: str, fin: bool = False) -> "str | None":
+    """Normaliza un filtro de fecha del panel. Acepta 'YYYY-MM-DD' (día completo)
+    o 'YYYY-MM-DDTHH:MM' / 'YYYY-MM-DD HH:MM' (datetime-local, corte por hora).
+    Devuelve 'YYYY-MM-DD HH:MM:SS' o None. `fin=True` extiende al final del rango."""
+    v = (v or "").strip().replace("T", " ")
+    if not v:
+        return None
+    if len(v) <= 10:  # solo fecha
+        return v + (" 23:59:59" if fin else " 00:00:00")
+    if len(v) == 16:  # fecha + HH:MM
+        return v + (":59" if fin else ":00")
+    return v
+
+
 def _es_admin(usuario: dict | None) -> bool:
     return bool(usuario) and (usuario.get("email") or "").strip().lower() == _EMAIL_ADMIN
 
@@ -665,12 +679,14 @@ def revision_xlsx(tabla: str = "", tipo: str = "", metodo: str = "", conf: str =
         cond.append("log.confianza >= 0.7 AND log.confianza < 0.85")
     elif conf == "alta":
         cond.append("log.confianza >= 0.85")
-    if rango in _RANGOS:
+    if rango in _RANGOS and not desde and not hasta:
         cond.append(_RANGOS[rango].replace("creado_en", "log.creado_en"))
-    if desde:
-        cond.append("log.creado_en >= %s"); args.append(desde + " 00:00:00")
-    if hasta:
-        cond.append("log.creado_en <= %s"); args.append(hasta + " 23:59:59")
+    _d = _norm_fecha(desde, fin=False)
+    _h = _norm_fecha(hasta, fin=True)
+    if _d:
+        cond.append("log.creado_en >= %s"); args.append(_d)
+    if _h:
+        cond.append("log.creado_en <= %s"); args.append(_h)
     if busqueda:
         cond.append("log.descripcion LIKE %s"); args.append(f"%{busqueda.strip()}%")
     if licitacion:
@@ -921,15 +937,19 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
         cond.append("confianza >= 0.7 AND confianza < 0.85")
     elif conf == "alta":
         cond.append("confianza >= 0.85")
-    # Fecha — preset (rango) o rango personalizado (desde/hasta, formato YYYY-MM-DD).
-    if rango in _RANGOS:
+    # Fecha — preset (rango) o rango personalizado (desde/hasta). Si el revisor
+    # puso desde/hasta, esos MANDAN (se ignora el preset). Acepta fecha sola
+    # (YYYY-MM-DD) o fecha+hora (datetime-local) para cortes por turno.
+    if rango in _RANGOS and not desde and not hasta:
         cond.append(_RANGOS[rango])
-    if desde:
+    _d = _norm_fecha(desde, fin=False)
+    _h = _norm_fecha(hasta, fin=True)
+    if _d:
         cond.append("creado_en >= %s")
-        args.append(desde + " 00:00:00")
-    if hasta:
+        args.append(_d)
+    if _h:
         cond.append("creado_en <= %s")
-        args.append(hasta + " 23:59:59")
+        args.append(_h)
     # Búsqueda de texto en la descripción (LIKE %X%)
     if busqueda:
         cond.append("descripcion LIKE %s")
@@ -1079,6 +1099,26 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
     csv_qs = qs_extras_str(tabla, tipo, metodo, conf, rango, desde, hasta,
                             estado, busqueda, licitacion)
 
+    # Prellenado de los campos de fecha: si el revisor no fijó un rango propio,
+    # mostramos el rango efectivo que se está cargando (ayer 00:00 → hoy 23:59)
+    # en formato datetime-local, para que VEA qué está revisando y pueda ajustar
+    # el corte por fecha/hora (turnos). Editable: si cambia los campos, mandan ellos.
+    from datetime import date as _date, timedelta as _td
+    def _dtlocal(v):
+        return (v or "").strip().replace(" ", "T")[:16]
+    if desde:
+        desde_val = _dtlocal(desde)
+    elif rango in ("", "ayer_hoy"):
+        desde_val = f"{(_date.today() - _td(days=1)).isoformat()}T00:00"
+    else:
+        desde_val = ""
+    if hasta:
+        hasta_val = _dtlocal(hasta)
+    elif rango in ("", "ayer_hoy"):
+        hasta_val = f"{_date.today().isoformat()}T23:59"
+    else:
+        hasta_val = ""
+
     filtros = (
         f"<form method=get action='/revision' class=ff>"
         # ---- línea 1: Estado · Tabla · Tipo
@@ -1114,8 +1154,8 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
         + opt("mes", "último mes", rango)
         + opt("todas", "todas", rango if rango else "todas")
         + "</select>"
-        f"<label>desde</label><input type=date name=desde value='{_e(desde)}'>"
-        f"<label>hasta</label><input type=date name=hasta value='{_e(hasta)}'>"
+        f"<label>desde</label><input type=datetime-local name=desde value='{_e(desde_val)}'>"
+        f"<label>hasta</label><input type=datetime-local name=hasta value='{_e(hasta_val)}'>"
         "<button type=submit class=sec>aplicar fechas</button>"
         "</div>"
         # ---- línea 3: Buscar (texto) · N° licitación · Excel
