@@ -46,6 +46,10 @@ class Taxonomia:
     # índices globales {valor_normalizado_sin_espacios: valor_canónico}
     comp_index: dict = field(default_factory=dict)
     pres_index: dict = field(default_factory=dict)
+    # composiciones VÁLIDAS por pactivo (de Base + diccionario): {pactivo_norm:
+    # set(comp_canónica)}. Lo usa el validador final para confirmar que la comp
+    # asignada existe para ese pactivo y no es un volumen/dosis inventado.
+    comp_por_pactivo: dict = field(default_factory=dict)
 
     def texto_para_prompt(self) -> str:
         """Bloque estable para el system prompt (se cachea con prompt caching)."""
@@ -199,12 +203,15 @@ def cargar_taxonomia() -> Taxonomia:
     pactivos: set[str] = set()
     comp_index: dict[str, str] = {}
     pres_index: dict[str, str] = {}
+    comp_por_pactivo: dict[str, set] = {}
 
     def _registrar(p, c, m):
         if p and p.strip():
             pactivos.add(p.strip())
         if c and c.strip():
             comp_index.setdefault(normalizar_valor(c), c.strip())
+            if p and p.strip():
+                comp_por_pactivo.setdefault(normalizar(p), set()).add(c.strip())
         if m and m.strip():
             pres_index.setdefault(normalizar_valor(m), m.strip())
 
@@ -257,6 +264,7 @@ def cargar_taxonomia() -> Taxonomia:
         presentaciones=sorted(set(pres_index.values())),
         comp_index=comp_index,
         pres_index=pres_index,
+        comp_por_pactivo=comp_por_pactivo,
     )
     if filtro_activo is not None:
         import logging

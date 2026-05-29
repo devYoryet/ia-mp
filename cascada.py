@@ -39,6 +39,32 @@ from taxonomia import Taxonomia
 # discos de antibiograma. Descarte duro por palabra clave (ver veto en la cascada).
 VETO_SENSIDISCOS = re.compile(r"sensi\s*disco|senci\s*disco", re.IGNORECASE)
 
+# Excipientes: lo que viene tras "Excip:" NO es el principio activo (es relleno:
+# lactosa, hidróxido de aluminio, estearato de magnesio...). Matchear ahí causaba
+# 'Fexofenadina ... Excip: ... aluminio ... magnesio' → 'Aluminio-Magnesio'.
+_RE_EXCIPIENTES = re.compile(r"\bexcip\w*\s*[:.\-]", re.IGNORECASE)
+# Vasoconstrictor ≈ epinefrina en anestésicos locales: habilita el pactivo
+# COMBINADO (Mepivacaina-Epinefrina, Articaina-Epinefrina). Pero "SIN
+# vasoconstrictor" es lo contrario → primero se elimina la negación.
+_RE_SIN_VASO = re.compile(r"sin\s+(vaso\s*constrictor|epinefrina|adrenalina)", re.IGNORECASE)
+_RE_CON_VASO = re.compile(r"(con\s+)?vaso\s*constrictor", re.IGNORECASE)
+
+
+def _texto_para_match(descripcion: str) -> str:
+    """Prepara la descripción SOLO para match_combinacion/match_diccionario:
+    - corta la sección de excipientes (no es el principio activo);
+    - normaliza 'con vasoconstrictor' → 'epinefrina' (habilita el combinado),
+      respetando 'sin vasoconstrictor' (que NO debe armar el combinado)."""
+    if not descripcion:
+        return descripcion
+    t = descripcion
+    m = _RE_EXCIPIENTES.search(t)
+    if m:
+        t = t[:m.start()]
+    t = _RE_SIN_VASO.sub(" ", t)        # "sin vasoconstrictor" → nada (anestésico simple)
+    t = _RE_CON_VASO.sub(" epinefrina ", t)  # "con vasoconstrictor" → epinefrina (combinado)
+    return t
+
 
 @dataclass
 class Resultado:
@@ -58,6 +84,35 @@ class Resultado:
 
 
 def clasificar_fila(
+    tabla: str,
+    fila: dict,
+    taxonomia: Taxonomia,
+    pactivos_norm: dict,
+    descartes: "Optional[dict]" = None,
+    cruce: "Optional[dict]" = None,
+    combinaciones: "Optional[list]" = None,
+    modelo_descarte=None,
+    ejemplos: str = "",
+    indice_inverso: "Optional[dict]" = None,
+    modelo_pactivo=None,
+) -> Resultado:
+    """Clasifica y aplica el VALIDADOR FINAL de composición: cualquier rama de la
+    cascada (cruce verbatim, regla, modelo, Claude libre) puede dejar una comp que
+    NO existe para el pactivo. `preclasificador.canonizar_comp` la confirma contra
+    el catálogo del pactivo (corrige decimal 7.5↔7,5; manda a 'Sin cla' lo que no
+    existe, p.ej. un volumen del envase). Punto único — vale para TODAS las ramas."""
+    r = _clasificar_fila_impl(
+        tabla, fila, taxonomia, pactivos_norm, descartes, cruce, combinaciones,
+        modelo_descarte, ejemplos, indice_inverso, modelo_pactivo,
+    )
+    if r.interes == 1 and r.pactivo and r.composicion:
+        r.composicion = preclasificador.canonizar_comp(
+            taxonomia, tabla, r.pactivo, r.composicion
+        )
+    return r
+
+
+def _clasificar_fila_impl(
     tabla: str,
     fila: dict,
     taxonomia: Taxonomia,
@@ -153,10 +208,11 @@ def clasificar_fila(
     # descripción, regla_diccionario matchea "Bevacizumab" del título y asigna
     # mal el pactivo. El título es el paraguas del tender (puede listar varios
     # fármacos); la descripción identifica el ÍTEM real.
-    pactivo = reglas.match_combinacion(descripcion or "", combinaciones or [])
+    desc_match = _texto_para_match(descripcion or "")
+    pactivo = reglas.match_combinacion(desc_match, combinaciones or [])
     por_combinacion = pactivo is not None
     if not pactivo:
-        pactivo = reglas.match_diccionario(descripcion or "", pactivos_norm)
+        pactivo = reglas.match_diccionario(desc_match, pactivos_norm)
     if pactivo:
         # VETO del modelo entrenado sobre el match SIMPLE de diccionario.
         # match_diccionario hace un match de texto contra un catálogo que

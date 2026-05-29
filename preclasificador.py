@@ -239,3 +239,44 @@ def comp_pres_por_pactivo(tabla: str, pactivo: Optional[str]) -> tuple:
     if not filas:
         return (SIN_CLA, SIN_CLA)
     return _resolver([(f["composicion"], f["presentacion"], int(f["n"])) for f in filas])
+
+
+def _unif_decimal(s: str) -> str:
+    """Unifica el separador decimal para COMPARAR: '7,5'->'7.5'. La coma chilena
+    y el punto son la misma dosis ('7,5mg' == '7.5 mg')."""
+    return (s or "").replace(",", ".")
+
+
+def canonizar_comp(tax, tabla: str, pactivo: Optional[str], comp: Optional[str]) -> Optional[str]:
+    """VALIDADOR FINAL de composición — confirma que la comp asignada EXISTE para
+    el pactivo en el catálogo (Base + diccionario + histórico humano). Resuelve:
+      - formato decimal: '7.5 mg' -> '7,5mg' (la forma canónica del catálogo);
+      - dosis/volumen inventado: 'Clorhexidina 50ml' (no es comp de Clorhexidina,
+        que son '0,2%','2%'...) -> 'Sin cla', porque la IA NO inventa.
+    Si el pactivo no tiene comps conocidas (pactivo nuevo sin histórico ni Base),
+    deja la comp tal cual — no rompe lo que no puede verificar. NO toca el comodín
+    'Sin cla' / valor 'Sin Clas'."""
+    if not comp or not comp.strip():
+        return comp
+    nv = normalizar_valor(comp)
+    if nv in ("sincla", "sinclas"):
+        return comp
+    pact_n = normalizar(pactivo or "")
+    if not pact_n:
+        return comp
+    # {decimal_unificado(normalizado): forma_canónica}. Base/diccionario PRIMERO
+    # (forma oficial del catálogo, p.ej. '7,5mg' con coma chilena), luego el
+    # histórico humano ordenado por frecuencia — setdefault da prioridad a Base.
+    mapa: dict = {}
+    hay = False
+    for c in sorted(getattr(tax, "comp_por_pactivo", {}).get(pact_n, set())):
+        if c and c.strip():
+            hay = True
+            mapa.setdefault(_unif_decimal(normalizar_valor(c)), c.strip())
+    for c, _p, _n in _COMP_PRES_OPCIONES.get(tabla, {}).get(pact_n, []):
+        if c and c.strip():
+            hay = True
+            mapa.setdefault(_unif_decimal(normalizar_valor(c)), c.strip())
+    if not hay:
+        return comp  # pactivo sin comps conocidas — no validar (no romper)
+    return mapa.get(_unif_decimal(nv), "Sin cla")
