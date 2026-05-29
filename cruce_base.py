@@ -33,6 +33,32 @@ log = logging.getLogger("cruce_base")
 _LARGO_MIN = 8
 _LOTE = 5000
 
+# Coletillas administrativas que NO identifican producto. En el histórico de OC
+# reales (Base/analisis_precios) el comprador a veces escribió SOLO esta frase
+# como descripción del ítem, y la OC se cerró con un pactivo concreto porque el
+# detalle real venía en el archivo anexo. Indexarlas hace que una compra nueva
+# cuya descripción sea "según adjunto" matchee EXACTO y reciba ese pactivo
+# arbitrario con confianza 0.95 (medido 2026-05-29: 23/24 = 96% FP). Se filtran
+# por igualdad EXACTA de la clave normalizada — NO por substring: un texto largo
+# que CONTIENE "ver adjunto" pero describe un producto ("amoxicilina 500... ver
+# adjunto") sí se indexa, es legítimo.
+_CLAVES_GENERICAS = {
+    "segun adjunto", "segun el adjunto", "segun lo adjunto", "ver adjunto",
+    "ver el adjunto", "documento adjunto", "ver documento adjunto",
+    "archivo adjunto", "ver archivo adjunto", "segun archivo adjunto",
+    "segun documento adjunto", "segun detalle adjunto", "detalle adjunto",
+    "segun detalle", "segun el detalle", "planilla adjunta", "segun planilla",
+    "segun planilla adjunta", "segun anexo", "ver anexo", "anexo adjunto",
+    "segun el anexo", "ficha tecnica", "ver ficha tecnica", "segun ficha tecnica",
+    "se adjunta ficha tecnica", "adjunta ficha tecnica", "adjunto ficha tecnica",
+    "terminos de referencia", "segun terminos de referencia",
+    "segun terminos de referencias", "ver terminos de referencia",
+    "segun ttr", "segun bases", "segun las bases", "segun bases tecnicas",
+    "segun lo solicitado", "segun requerimiento", "segun requerimientos",
+    "segun especificaciones", "segun especificacion", "segun cotizacion",
+    "adjunto", "anexo", "varios", "otros", "segun orden de compra",
+}
+
 # Fuentes históricas de OC reales con clasificación humana. Cada una declara
 # qué columnas leer (los nombres difieren entre bases). Si una base no existe
 # o no es alcanzable, se loguea y se sigue con las demás.
@@ -82,7 +108,7 @@ def _cargar_fuente(votos: dict, fuente: dict) -> int:
                     valor = (f["pact"], f["comp"], f["pres"])
                     for campo in (f["compr"], f["prov"]):
                         t = normalizar(campo)
-                        if len(t) >= _LARGO_MIN:
+                        if len(t) >= _LARGO_MIN and t not in _CLAVES_GENERICAS:
                             votos[t][valor] += 1
     except Exception as exc:  # noqa: BLE001
         log.warning("Fuente %s.%s inaccesible (%s) — se omite",
@@ -110,6 +136,6 @@ def buscar(indice: dict, descripcion: str | None) -> tuple | None:
     if not indice or not descripcion:
         return None
     t = normalizar(descripcion)
-    if len(t) < _LARGO_MIN:
+    if len(t) < _LARGO_MIN or t in _CLAVES_GENERICAS:
         return None
     return indice.get(t)

@@ -114,13 +114,21 @@ class Taxonomia:
         # segunda componente. Si el pactivo lleva '-' o '+' en el nombre, armamos
         # la candidata combinada y solo la aceptamos si existe en el catálogo;
         # si no, devolvemos None y dejamos que el respaldo histórico decida.
-        if pactivo and ("-" in pactivo or "+" in pactivo) and len(efectivas) >= 2:
-            cand = _armar_compuesta(efectivas[:2])
+        es_compuesto = bool(pactivo) and ("-" in pactivo or "+" in pactivo)
+        if es_compuesto:
+            cand = None
+            if len(efectivas) >= 2:
+                cand = _armar_compuesta(efectivas[:2])
+            # Si la regex estricta no halló 2 dosis (la 2ª viene sin unidad propia:
+            # "VALSARTAN 80 MG/12,5 HIDROCLOROTIAZIDA", "TRAYENTA 2,5/850 MG"),
+            # intentar el patrón con barra heredando la unidad. Verificado 2026-05-29.
+            if not cand:
+                cand = _compuesta_desde_slash(t)
             if cand:
                 clave = normalizar_valor(cand)
                 if clave in self.comp_index:
                     return (self.comp_index[clave], pres_final)
-                return (None, pres_final)
+                return (None, pres_final)  # no inventar dosis que no existe
 
         return (_snap(efectivas[0], self.comp_index), pres_final)
 
@@ -128,7 +136,14 @@ class Taxonomia:
 def _snap(valor: str | None, indice: dict) -> str:
     if not valor or not valor.strip():
         return "Sin cla"
-    return indice.get(normalizar_valor(valor)) or valor.strip()
+    nv = normalizar_valor(valor)
+    # Cualquier variante del COMODÍN ("Sin Cla", "SIN CLA", "sin cla") → forma
+    # canónica única. NO toca "sinclas" (con s): ese es el VALOR del catálogo y
+    # se canoniza vía el índice más abajo. Claude todavía genera "Sin Cla" libre
+    # en presentación (medido 2026-05-29) y el índice no lo pisaba.
+    if nv == "sincla":
+        return "Sin cla"
+    return indice.get(nv) or valor.strip()
 
 
 _RE_DOSIS_PARTES = re.compile(
@@ -152,6 +167,31 @@ def _armar_compuesta(dosis_lista: list) -> str | None:
     if len(unidades) > 1:
         return None
     return "-".join(n for n, _ in pares) + pares[0][1]
+
+
+# Dosis combinada escrita con barra y unidad a veces SOLO en una de las dos:
+# "80 mg/12,5", "2,5/850 mg", "0,005%/0,5%". La unidad se hereda del lado que la
+# tenga. Captura solo las 2 primeras componentes (los triples se cubren con el
+# flujo de varias dosis con unidad explícita).
+_UNID = r"(mg/ml|mg/g|ui/ml|mg|mcg|ug|ui|%|g/l|g)"
+_RE_COMPUESTA_SLASH = re.compile(
+    r"(\d+(?:[.,]\d+)?)\s*" + _UNID + r"?\s*/\s*(\d+(?:[.,]\d+)?)\s*" + _UNID + r"?",
+    re.IGNORECASE,
+)
+
+
+def _compuesta_desde_slash(texto_norm: str) -> str | None:
+    """'80 mg/12,5 ...' → '80-12,5mg'; '2,5/850 mg' → '2,5-850mg'. Devuelve None si
+    ningún lado trae unidad (sin unidad no se puede saber qué es: '5/10' podría ser
+    una fecha o una cantidad)."""
+    m = _RE_COMPUESTA_SLASH.search(texto_norm)
+    if not m:
+        return None
+    n1, u1, n2, u2 = m.group(1), m.group(2), m.group(3), m.group(4)
+    unidad = u1 or u2
+    if not unidad:
+        return None
+    return f"{n1}-{n2}{unidad.lower()}"
 
 
 def cargar_taxonomia() -> Taxonomia:

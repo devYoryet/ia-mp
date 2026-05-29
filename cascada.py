@@ -20,6 +20,7 @@ Claude (texto libre) y la extracción desde la glosa se ajustan con `taxonomia`.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Optional
 
@@ -33,6 +34,10 @@ from reglas import PACTIVOS_NO_MATCH_DIRECTO, normalizar
 from config import config
 from descarte_items import COLUMNA_RUBRO
 from taxonomia import Taxonomia
+
+# Sensidiscos / sencidiscos / sensi discos (con o sin tilde, plural opcional) —
+# discos de antibiograma. Descarte duro por palabra clave (ver veto en la cascada).
+VETO_SENSIDISCOS = re.compile(r"sensi\s*disco|senci\s*disco", re.IGNORECASE)
 
 
 @dataclass
@@ -69,6 +74,24 @@ def clasificar_fila(
     titulo = fila.get("Titulo")
     vinculos = fila.get("VINCULOS")
     texto = f"{titulo or ''} {descripcion or ''}".strip()
+
+    # Veto SENSIDISCOS — discos de susceptibilidad antibiótica (antibiograma), un
+    # insumo de microbiología, NO un fármaco que Pharmatender provea. La glosa
+    # menciona el antibiótico (Cefadroxilo, Piperacilina, etc.), así que tanto el
+    # cruce como regla_diccionario lo marcarían como interés ANTES de llegar a
+    # Claude — por eso el veto va primero, como descarte duro por palabra clave.
+    # (Antes era una regla del prompt de Claude (id=7), inútil: la cascada
+    # resolvía por el antibiótico antes de consultar a Claude. Medido 2026-05-29.)
+    if VETO_SENSIDISCOS.search(descripcion or ""):
+        return Resultado(
+            interes=0,
+            pactivo=None,
+            composicion=None,
+            presentacion=None,
+            confianza=0.97,
+            metodo="veto_sensidiscos",
+            razon="Sensidiscos (discos de antibiograma) — insumo de microbiología, no fármaco.",
+        )
 
     # Cruce Base — descripción idéntica a una OC REAL del catálogo 0001_td_oc.Base.
     # Va PRIMERO: protege a un producto médico real de un descarte por rubro.
