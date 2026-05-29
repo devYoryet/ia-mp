@@ -48,6 +48,25 @@ tr + tr td { border-top: 1px solid #eef1f4; }
         box-shadow: 0 1px 3px rgba(0,0,0,.08); border-left: 4px solid #2f6fb0; }
 .fila.t-descarte { border-left-color: #c0392b; }
 .fila.t-nuevo { border-left-color: #d68910; background: #fffaf2; }
+/* Vista de APROBACIÓN (usuarios que aprueban, no admin): color de FONDO por
+   estado + descripción protagonista. Verde=interés, rojo=descarte, naranja=nuevo. */
+.fila-aprob { border-left-width: 6px; border-left-color: #1b6b3a; background: #f3fbf5; }
+.fila-aprob.t-descarte { border-left-color: #c0392b; background: #fdf3f2; }
+.fila-aprob.t-nuevo { border-left-color: #d68910; background: #fff7ea; }
+.fila-aprob .desc-aprob { font-size: 17px; font-weight: 600; color: #1d2330;
+        line-height: 1.35; margin: 6px 0 8px; }
+.fila-aprob .meta-aprob { display: flex; align-items: baseline; gap: 14px; font-size: 13px; }
+.fila-aprob .ap-lic { font-size: 15px; color: #1d2330; }
+.fila-aprob .ap-cierre { color: #c0392b; font-weight: 600; }
+.fila-aprob .ap-rev { color: #6b7689; font-style: italic; }
+.fila-aprob .ap-vinc { font-size: 12.5px; color: #44506a; background: #f5f7fa;
+        border-radius: 6px; padding: 6px 10px; margin: 4px 0 8px; }
+.fila-aprob .ap-vinc .ap-tag { font-weight: 700; color: #2f6fb0; margin-right: 6px;
+        text-transform: uppercase; font-size: 11px; }
+.fila-aprob .ap-bajo { margin-top: 8px; padding: 4px 10px; font-size: 12.5px;
+        background: #eaf4ec; color: #1b6b3a; border: 1px solid #bfe0c8;
+        border-radius: 6px; cursor: pointer; }
+.fila-aprob .ap-bajo:hover { background: #d8ecdd; }
 .fila .meta { font-size: 12px; color: #6b7689; }
 .fila .desc { font-size: 14px; margin: 4px 0 4px; }
 .fila .razon { font-size: 12px; color: #6b7689; font-style: italic; margin-bottom: 8px; }

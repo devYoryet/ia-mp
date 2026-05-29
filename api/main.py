@@ -49,6 +49,24 @@ app.include_router(legacy_router)
 # container; /api/catalogo se usa por el front del propio panel (ya logueado).
 _RUTAS_PUBLICAS = {"/login", "/logout", "/salud"}
 
+# Vista TÉCNICA (badges de confianza/vía/entrenamiento, de dónde viene el error):
+# solo para quien afina el sistema. El resto ve la vista LIMPIA de aprobación.
+_EMAIL_ADMIN = "y.danoun@pharmatender.cl"
+# Quiénes pueden ver el campo de GASTOS (costo acumulado) en /resumen.
+_EMAILS_GASTOS = {
+    "y.danoun@pharmatender.cl",
+    "m.moraga@pharmatender.cl",
+    "m.saavedra@pharmatender.cl",
+}
+
+
+def _es_admin(usuario: dict | None) -> bool:
+    return bool(usuario) and (usuario.get("email") or "").strip().lower() == _EMAIL_ADMIN
+
+
+def _ve_gastos(usuario: dict | None) -> bool:
+    return bool(usuario) and (usuario.get("email") or "").strip().lower() in _EMAILS_GASTOS
+
 
 @app.middleware("http")
 async def proteger(request: Request, call_next):
@@ -232,6 +250,12 @@ def resumen(request: Request) -> str:
         )
     rev = log["rev"] or 0
     prec = f"{(log['ok'] or 0) / rev * 100:.1f}%" if rev else "—"
+    # El card de GASTOS solo lo ven los autorizados (gerencia + quien afina).
+    card_gastos = (
+        f"<div class=card><div class=n>${float(costo):.2f}</div>"
+        f"<div class=l>Gastado de ${config.budget_usd:.0f} (acumulado)</div></div>"
+        if _ve_gastos(usuario) else ""
+    )
     cuerpo = (
         "<h1>Resumen</h1>"
         "<h2>Pendientes de procesar (filas nuevas sin clasificar)</h2><div class=cards>"
@@ -245,8 +269,7 @@ def resumen(request: Request) -> str:
         f"<div class=card><div class=n>{log['pend'] or 0}</div><div class=l>Pendientes de revisión</div></div>"
         f"<div class=card><div class=n>{rev}</div><div class=l>Revisadas</div></div>"
         f"<div class=card><div class=n>{prec}</div><div class=l>Precisión (revisadas)</div></div>"
-        f"<div class=card><div class=n>${float(costo):.2f}</div>"
-        f"<div class=l>Gastado de ${config.budget_usd:.0f} (acumulado)</div></div>"
+        f"{card_gastos}"
         "</div>"
         "<div class=aviso>Modo actual del worker: <b>" + _e(config.modo) + "</b>. "
         "La cola de revisión se llena cuando el worker corre en modo producción.</div>"
@@ -971,6 +994,7 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
     # número de licitación / compra ágil de cada fila — vive en la tabla origen,
     # no en el log; se trae con una consulta por tabla (no una por fila).
     num_lic: dict = {}
+    info_origen: dict = {}  # (tabla, id) -> {cierre, vinculos} para la vista de aprobación
     por_tabla: dict = {}
     for f in filas:
         por_tabla.setdefault(f["tabla_origen"], []).append(f["fila_id"])
@@ -979,9 +1003,14 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
             ph = ",".join(["%s"] * len(ids))
             try:
                 for r in _query(
-                    f"SELECT id, Licitacion FROM `{t}` WHERE id IN ({ph})", tuple(ids)
+                    f"SELECT id, Licitacion, Fecha_Cierre, VINCULOS FROM `{t}` "
+                    f"WHERE id IN ({ph})", tuple(ids)
                 ):
                     num_lic[(t, r["id"])] = r["Licitacion"]
+                    info_origen[(t, r["id"])] = {
+                        "cierre": r.get("Fecha_Cierre"),
+                        "vinculos": r.get("VINCULOS"),
+                    }
             except Exception:  # noqa: BLE001
                 pass
 
@@ -1124,17 +1153,34 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
         except Exception:  # noqa: BLE001
             pass
 
+    # VISTA según usuario: el admin (quien afina) ve la técnica con badges de
+    # confianza/vía/entrenamiento — le dice de dónde viene el error. El resto
+    # (aprobadores) ve la vista LIMPIA: solo color + descripción + datos para
+    # decidir, ordenada por fecha de cierre más próxima (urgente).
+    es_admin = _es_admin(usuario)
+    if not es_admin and estado == "pendientes":
+        import datetime as _dt
+        _tope = _dt.datetime.max
+        def _orden_cierre(f):
+            c = info_origen.get((f["tabla_origen"], f["fila_id"]), {}).get("cierre")
+            if not isinstance(c, _dt.datetime):
+                return (1, _tope)  # sin fecha de cierre → al final
+            return (0, c)
+        filas = sorted(filas, key=_orden_cierre)
+
     bloques = []
     grupo_actual = None
     for n, f in enumerate(filas):
-        # Encabezado de supergrupo cuando cambia
-        sg_key, sg_etiq = _supergrupo(f)
-        if sg_key != grupo_actual:
-            grupo_actual = sg_key
-            short_key = sg_key.split("_")[0] if "_" in sg_key else sg_key
-            n_grupo = grupo_counts.get(short_key, "")
-            n_html = f" <span class=grupo-n>({n_grupo:,} en total)</span>" if n_grupo else ""
-            bloques.append(f"<div class=grupo-hdr>{sg_etiq}{n_html}</div>")
+        # Encabezado de supergrupo SOLO en la vista técnica (admin). Para
+        # aprobadores el orden es por fecha de cierre, sin supergrupos.
+        if es_admin:
+            sg_key, sg_etiq = _supergrupo(f)
+            if sg_key != grupo_actual:
+                grupo_actual = sg_key
+                short_key = sg_key.split("_")[0] if "_" in sg_key else sg_key
+                n_grupo = grupo_counts.get(short_key, "")
+                n_html = f" <span class=grupo-n>({n_grupo:,} en total)</span>" if n_grupo else ""
+                bloques.append(f"<div class=grupo-hdr>{sg_etiq}{n_html}</div>")
         conf = float(f.get("confianza") or 0)
         interes = f.get("interes_sugerido")
         es_nuevo = bool((f.get("pactivo_nuevo") or "").strip())
@@ -1145,36 +1191,54 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
             tipo_cls, badge = "t-nuevo", "<span class='badge b-nuevo'>PACTIVO NUEVO</span>"
         else:
             tipo_cls, badge = "", "<span class='badge b-int'>INTERÉS sugerido</span>"
-        # vía: qué etapa de la cascada resolvió esta fila.
-        _met = f.get("metodo")
-        via = f" · <span class='badge b-met'>vía {_e(_METODOS.get(_met, _met or '?'))}</span>"
+        # Badges técnicos (vía cascada + entrenamiento del modelo) SOLO para el
+        # admin que afina. Los aprobadores no los ven (distraen del flujo).
+        via = ent = ""
+        if es_admin:
+            _met = f.get("metodo")
+            via = f" · <span class='badge b-met'>vía {_e(_METODOS.get(_met, _met or '?'))}</span>"
+            _m = _modelo_descarte()
+            if _m is not None:
+                pd = prob_descarte(_m, f.get("descripcion"))
+                if pd >= 0.5:
+                    ent = f" · <span class='badge b-ent-d'>entrenamiento: DESCARTE {pd:.2f}</span>"
+                else:
+                    ent = f" · <span class='badge b-ent-i'>entrenamiento: INTERÉS {1 - pd:.2f}</span>"
 
-        # etiqueta de ENTRENAMIENTO: qué dice el clasificador de descarte
-        # entrenado sobre esta fila, independiente de la etapa que la resolvió.
-        _m = _modelo_descarte()
-        ent = ""
-        if _m is not None:
-            pd = prob_descarte(_m, f.get("descripcion"))
-            if pd >= 0.5:
-                ent = f" · <span class='badge b-ent-d'>entrenamiento: DESCARTE {pd:.2f}</span>"
-            else:
-                ent = f" · <span class='badge b-ent-i'>entrenamiento: INTERÉS {1 - pd:.2f}</span>"
+        _lic_txt = _e(num_lic.get((f["tabla_origen"], f["fila_id"])) or "—")
+        _cierre = info_origen.get((f["tabla_origen"], f["fila_id"]), {}).get("cierre")
+        _cierre_txt = _fmt_dt(_cierre) if _cierre else "—"
 
-        # Encabezado común con timestamps. Para revisadas suma quién y cuándo.
-        meta_html = (
-            f"<div class=meta>{badge} &nbsp; "
-            f"<b>Licitación {_e(num_lic.get((f['tabla_origen'], f['fila_id'])) or '—')}</b>"
-            f" · {_e(f['tabla_origen'])} #{f['fila_id']} · "
-            f"<span class='badge {'b-baja' if conf < 0.7 else 'b-alta'}'>confianza {conf:.2f}</span>"
-            f"{via}{ent}"
-            f"<div class=ts>clasificada {_fmt_dt(f.get('creado_en'))}"
-            + (
-                f" · revisada {_fmt_dt(f.get('revisado_en'))} "
-                f"por <b>{_e(f.get('revisado_por') or '—')}</b>"
-                if revisada else ""
+        if es_admin:
+            # Encabezado TÉCNICO con timestamps. Para revisadas suma quién y cuándo.
+            meta_html = (
+                f"<div class=meta>{badge} &nbsp; "
+                f"<b>Licitación {_lic_txt}</b>"
+                f" · {_e(f['tabla_origen'])} #{f['fila_id']} · "
+                f"<span class='badge {'b-baja' if conf < 0.7 else 'b-alta'}'>confianza {conf:.2f}</span>"
+                f"{via}{ent}"
+                f"<div class=ts>clasificada {_fmt_dt(f.get('creado_en'))}"
+                + (
+                    f" · revisada {_fmt_dt(f.get('revisado_en'))} "
+                    f"por <b>{_e(f.get('revisado_por') or '—')}</b>"
+                    if revisada else ""
+                )
+                + "</div></div>"
             )
-            + "</div></div>"
-        )
+        else:
+            # Encabezado LIMPIO de aprobación: N° licitación primero (izq→der),
+            # luego fecha de cierre. Sin confianza/vía/entrenamiento. El color de
+            # la fila (verde/rojo/naranja) ya comunica interés/descarte/nuevo.
+            meta_html = (
+                f"<div class='meta meta-aprob'>"
+                f"<b class=ap-lic>N° {_lic_txt}</b>"
+                f"<span class=ap-cierre>cierra: {_cierre_txt}</span>"
+                + (
+                    f"<span class=ap-rev>revisada por {_e(f.get('revisado_por') or '—')}</span>"
+                    if revisada else ""
+                )
+                + "</div>"
+            )
 
         # FILA YA REVISADA: solo lectura, sin checkbox ni form. Muestra el
         # veredicto humano (aprobada / corregida) y sus notas para auditoría.
@@ -1190,11 +1254,12 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
                 if fn:
                     detalle += f" · motivo: {_e(fn)}"
                 veredicto = f"<span class='badge b-desc'>{etiqueta}</span>{detalle}"
+            razon_html = f"<div class=razon>IA: {_e(f.get('razon'))}</div>" if es_admin else ""
             bloques.append(
                 f"<div class='fila revisada {tipo_cls}'>"
                 f"<div class=fila-head><div style='width:24px'></div>{meta_html}</div>"
                 f"<div class=desc>{_e((f.get('descripcion') or '')[:300])}</div>"
-                f"<div class=razon>IA: {_e(f.get('razon'))}</div>"
+                f"{razon_html}"
                 f"<div class=veredicto>{veredicto}</div>"
                 f"</div>"
             )
@@ -1215,19 +1280,12 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
                 "se evalúe agregarlo al catálogo.</div>"
             )
 
-        # Para DESCARTES la línea de pactivo/comp/pres se colapsa por default —
-        # no hace falta editarla si el descarte está bien; basta con el checkbox.
-        linea_oculta = " hidden" if interes == 0 and not es_nuevo else ""
-        bloques.append(
-            f"<div class='fila {tipo_cls}' data-row='{n}'>"
-            f"<div class=fila-head>"
-            f"<input type=checkbox class=marcar name=procesar value='{f['id']}' "
-            f"data-row='{n}' checked>"
-            f"{meta_html}</div>"
-            f"<div class=desc>{_e((f.get('descripcion') or '')[:300])}</div>"
-            f"<div class=razon>IA: {_e(f.get('razon'))}</div>"
-            + aviso_nuevo
-            + f"<input type=hidden name=log_id value='{f['id']}'>"
+        # Línea de edición — MISMOS name= en ambas vistas (el POST a /revisar-hoja
+        # es idéntico). En la vista técnica los descartes se colapsan; para
+        # aprobadores siempre se ve pactivo/comp/pres.
+        linea_oculta = " hidden" if (es_admin and interes == 0 and not es_nuevo) else ""
+        edicion = (
+            f"<input type=hidden name=log_id value='{f['id']}'>"
             f"<div class='linea linea-edicion' data-row='{n}'{linea_oculta}>"
             f"<select name=decision class=decision data-row='{n}'>"
             "<option value=aprobar selected>Aprobar</option>"
@@ -1243,8 +1301,40 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
             + _select("presentacion", n, "f-pres", f.get("presentacion_sugerida"), press)
             + "<input class=motivo name=motivo "
             "placeholder='motivo (obligatorio si corriges o descartas)'>"
-            "</div></div>"
+            "</div>"
         )
+
+        if es_admin:
+            bloques.append(
+                f"<div class='fila {tipo_cls}' data-row='{n}'>"
+                f"<div class=fila-head>"
+                f"<input type=checkbox class=marcar name=procesar value='{f['id']}' "
+                f"data-row='{n}' checked>"
+                f"{meta_html}</div>"
+                f"<div class=desc>{_e((f.get('descripcion') or '')[:300])}</div>"
+                f"<div class=razon>IA: {_e(f.get('razon'))}</div>"
+                + aviso_nuevo + edicion + "</div>"
+            )
+        else:
+            # Vista de aprobación: descripción protagonista, luego VINCULOS,
+            # luego edición. Botón para tildar de esta fila hacia abajo.
+            vinc = (info_origen.get((f["tabla_origen"], f["fila_id"]), {}).get("vinculos") or "").strip()
+            vinc_html = (
+                f"<div class=ap-vinc><span class=ap-tag>Vínculos</span> {_e(vinc[:500])}</div>"
+                if vinc else ""
+            )
+            bloques.append(
+                f"<div class='fila fila-aprob {tipo_cls}' data-row='{n}'>"
+                f"<div class=fila-head>"
+                f"<input type=checkbox class=marcar name=procesar value='{f['id']}' "
+                f"data-row='{n}' checked>"
+                f"{meta_html}</div>"
+                f"<div class='desc desc-aprob'>{_e((f.get('descripcion') or '')[:500])}</div>"
+                + vinc_html + aviso_nuevo + edicion
+                + f"<button type=button class=ap-bajo onclick='aprobarDesde({n})'>"
+                "✓ aprobar de aquí hacia abajo</button>"
+                + "</div>"
+            )
 
     # datalist único con todos los pactivos del catálogo (autocompletado nativo)
     opts = "".join(
@@ -1390,6 +1480,17 @@ function marcarTodos(estado){
   document.querySelectorAll('.fila input.marcar').forEach(function(cb){
     cb.checked = estado;
     aplicarEstadoMarca(cb);
+  });
+  actualizarCuenta();
+}
+// Vista de aprobación: tildar de esta fila hacia abajo (revisé hasta acá, el
+// resto lo apruebo en bloque). Las filas ya vienen ordenadas por fecha de cierre.
+function aprobarDesde(n){
+  document.querySelectorAll('.fila[data-row]').forEach(function(f){
+    if(parseInt(f.dataset.row,10) >= n){
+      var cb=f.querySelector('input.marcar');
+      if(cb){cb.checked=true; aplicarEstadoMarca(cb);}
+    }
   });
   actualizarCuenta();
 }
