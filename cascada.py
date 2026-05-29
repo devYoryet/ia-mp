@@ -192,6 +192,31 @@ def _clasificar_fila_impl(
     # DESCARTE del histórico con soporte bajo no se confía (ver buscar_en_historico).
     p = preclasificador.buscar_en_historico(tabla, descripcion, fila.get("id", 0))
     if p:
+        # CONFLICTO REVISAR: histórico de soporte BAJO (1-2 votos) gana como
+        # interés, pero el modelo_descarte entrenado está MUY seguro de descarte.
+        # Caso real medido 2026-05-29: "GUIA ANGIOPLASTIA" → Jeringas (histórico
+        # 1x, descarte 0.99) — el humano de 1 vez se equivocó. En vez de auto-
+        # aprobar el interés ciego, se marca como "pactivo nuevo / revisar"
+        # (naranja, homologado al concepto pactivo nuevo) para que el revisor lo
+        # mire. NO se descarta automático — a veces el histórico acierta y el
+        # modelo se equivoca (caso ACIDO FOLINICO → Leucovorina, sinónimos).
+        if p.interes == 1 and p.pactivo and p.soporte <= 2:
+            p_desc = descarte_modelo.prob_descarte(modelo_descarte, descripcion)
+            if p_desc >= config.umbral_modelo_descarte:
+                return Resultado(
+                    interes=1,
+                    pactivo=None,
+                    pactivo_nuevo=p.pactivo,
+                    composicion=None,
+                    presentacion=None,
+                    confianza=round(p_desc, 3),
+                    metodo="historico",
+                    razon=(
+                        f"CONFLICTO REVISAR: histórico ({p.soporte}x) sugiere "
+                        f"'{p.pactivo}', pero el modelo de descarte está muy "
+                        f"seguro de DESCARTE ({p_desc:.2f}). Revisar."
+                    ),
+                )
         return Resultado(
             interes=p.interes,
             pactivo=p.pactivo,
