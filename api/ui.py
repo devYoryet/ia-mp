@@ -93,6 +93,14 @@ tr + tr td { border-top: 1px solid #eef1f4; }
 .hu-mot { color: #7a4e09; }
 .badge.b-warn { background: #fdeccf; color: #7a4e09; }
 
+/* /reglas — correcciones agrupadas por día (colapsable). */
+.dia-grp { margin: 8px 0; border: 1px solid #d9e0ea; border-radius: 7px;
+        background: #f9fafc; }
+.dia-grp summary { padding: 8px 12px; cursor: pointer; font-size: 14px;
+        background: #eef2f7; border-radius: 7px 7px 0 0; }
+.dia-grp[open] summary { border-bottom: 1px solid #d9e0ea; }
+.dia-grp table { margin: 0; }
+
 /* Combobox de pactivo: dropdown propio anclado DEBAJO del campo (reemplaza el
    datalist nativo que ocupaba toda la pantalla). Filtra al teclear, con scroll. */
 .pac-wrap { position: relative; display: inline-block; }

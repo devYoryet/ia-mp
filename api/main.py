@@ -2210,8 +2210,9 @@ def reglas(request: Request, msg: str = "") -> str:
     usuario = usuario_actual(request)
     try:
         items = _query(
-            "SELECT tipo, texto, creado_por, creado_en, activa FROM clasificador_ia_reglas "
-            "WHERE activa=1 ORDER BY tipo, creado_en DESC LIMIT 200"
+            "SELECT id, tipo, texto, creado_por, creado_en, activa "
+            "FROM clasificador_ia_reglas WHERE activa=1 "
+            "ORDER BY tipo, creado_en DESC LIMIT 500"
         )
     except Exception as exc:  # noqa: BLE001
         return _layout("Error", f"<div class=vacio>{_e(exc)}</div>", usuario=usuario)
@@ -2228,16 +2229,42 @@ def reglas(request: Request, msg: str = "") -> str:
         )
         return f"<table><tr><th>Texto</th><th>Por</th><th>Fecha</th></tr>{f}</table>"
 
+    def tabla_correcciones_por_dia(rows):
+        """Agrupa correcciones por DATE(creado_en), día más reciente arriba.
+        Cada día es un <details> colapsable con la cantidad en el resumen — para
+        revisar/auditar sin tener que scrollear 100+ correcciones de un tirón."""
+        if not rows:
+            return "<div class=vacio>Sin registros.</div>"
+        por_dia: dict = {}
+        for r in rows:
+            dia = str(r["creado_en"])[:10]
+            por_dia.setdefault(dia, []).append(r)
+        out = []
+        for dia in sorted(por_dia.keys(), reverse=True):
+            lst = por_dia[dia]
+            filas = "".join(
+                f"<tr><td>{_e(r['texto'])}</td><td>{_e(r['creado_por'])}</td>"
+                f"<td>{_e(str(r['creado_en'])[11:16])}</td></tr>"
+                for r in lst
+            )
+            out.append(
+                f"<details class=dia-grp open><summary>"
+                f"<b>{dia}</b> · {len(lst)} corrección(es)"
+                f"</summary>"
+                f"<table><tr><th>Texto</th><th>Por</th><th>Hora</th></tr>"
+                f"{filas}</table></details>"
+            )
+        return "".join(out)
+
     aviso = f"<div class=aviso>{_e(msg)}</div>" if msg else ""
-    # El campo `creado_por` ahora viene de la sesión, no de un input — la regla
-    # queda firmada por el usuario logueado.
     cuerpo = (
         "<h1>Reglas y correcciones — feedback al prompt</h1>" + aviso
         + "<form class=alta method=post action='/reglas'>"
         "<textarea name=texto placeholder='regla de negocio para la IA' required></textarea>"
         "<button type=submit>Agregar regla</button></form>"
         f"<h2>Reglas de negocio ({len(reglas_)})</h2>" + tabla(reglas_)
-        + f"<h2>Errores corregidos — máxima prioridad ({len(corr)})</h2>" + tabla(corr)
+        + f"<h2>Errores corregidos — máxima prioridad ({len(corr)})</h2>"
+        + tabla_correcciones_por_dia(corr)
     )
     return _layout("Reglas", cuerpo, usuario=usuario)
 
