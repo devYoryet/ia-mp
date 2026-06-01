@@ -1191,19 +1191,56 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
         "</form>"
     )
 
+    def _fmt_dt(dt):
+        return dt.strftime("%d-%m-%Y %H:%M") if dt else "—"
+
+    # Estado del worker: último ciclo + cuántas filas le faltan tomar (las que
+    # están pendientes en el LEGACY y la IA aún no procesó). Sirve para detectar
+    # delay: si "última procesada" es hace mucho, el worker está atrasado.
+    estado_worker = ""
+    try:
+        _ult = _query("SELECT MAX(creado_en) u FROM clasificador_ia_log")[0]["u"]
+        if _ult:
+            from datetime import datetime as _dt
+            _seg = int((_dt.now() - _ult).total_seconds())
+            if _seg < 60:
+                _hace = f"hace {_seg}s"
+            elif _seg < 3600:
+                _hace = f"hace {_seg // 60} min"
+            else:
+                _hace = f"hace {_seg // 3600}h {(_seg % 3600) // 60}min"
+            _cls = "ok" if _seg < 360 else ("warn" if _seg < 900 else "bad")
+            # cuántas le faltan al worker (pendientes en legacy NO en log)
+            _falt_ca = _query(
+                "SELECT COUNT(*) n FROM compra_agil t WHERE t.estado_gestor IS NULL "
+                "AND NOT EXISTS (SELECT 1 FROM clasificador_ia_log l "
+                "WHERE l.tabla_origen='compra_agil' AND l.fila_id=t.id)"
+            )[0]["n"]
+            _falt_li = _query(
+                "SELECT COUNT(*) n FROM Licitaciones_diarias t WHERE t.estado_gestor IS NULL "
+                "AND NOT EXISTS (SELECT 1 FROM clasificador_ia_log l "
+                "WHERE l.tabla_origen='Licitaciones_diarias' AND l.fila_id=t.id)"
+            )[0]["n"]
+            estado_worker = (
+                f"<div class='worker-st worker-{_cls}'>"
+                f"<b>Worker:</b> última fila procesada {_hace} ({_fmt_dt(_ult)}) "
+                f"· por procesar: {_falt_ca + _falt_li} "
+                f"(compra ágil {_falt_ca} · licitaciones {_falt_li})"
+                f"</div>"
+            )
+    except Exception:  # noqa: BLE001
+        pass
+
     if not total:
         return _layout(
             "Cola de revisión",
-            "<h1>Cola de revisión</h1>" + filtros
+            "<h1>Cola de revisión</h1>" + estado_worker + filtros
             + "<div class=vacio>No hay clasificaciones pendientes con ese filtro. 🎉</div>",
             usuario=usuario,
         )
 
     cat = _catalogo()
     aviso = f"<div class=aviso>{_e(msg)}</div>" if msg else ""
-
-    def _fmt_dt(dt):
-        return dt.strftime("%d-%m-%Y %H:%M") if dt else "—"
 
     # Pre-cuenta filas por supergrupo para inyectar headers con el total.
     # Lo calculamos sobre TODO el conjunto filtrado (no solo la hoja), porque
@@ -1468,7 +1505,7 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
         # aprobada — antes era un input que el revisor escribía a mano.
         nombre_rev = (usuario or {}).get("name", "—") if usuario else "—"
         cuerpo = (
-            f"<h1>{titulo_h1}</h1>{aviso}{filtros}"
+            f"<h1>{titulo_h1}</h1>{estado_worker}{aviso}{filtros}"
             f"<form method=post action='/revisar-hoja' id='formhoja'>"
             f"<input type=hidden name=hoja value='{hoja}'>"
             f"<input type=hidden name=tabla value='{_e(tabla)}'>"

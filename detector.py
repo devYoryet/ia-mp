@@ -20,13 +20,21 @@ _BACKTEST_OFFSET = int(os.getenv("BACKTEST_OFFSET", "0"))
 
 TABLAS_VALIDAS = ("compra_agil", "Licitaciones_diarias")
 
-# --- producción: filas nuevas sin clasificar ---
+# --- producción: filas pendientes en el LEGACY que la IA aún no procesó ---
+# Criterio: estado_gestor IS NULL (no clasificada por HUMANO en gestor_licitaciones)
+# Y no está aún en clasificador_ia_log. NO se mira `nombre_clasificador` porque
+# el legacy tiene un "Bot Clasificado"/"Bot Eliminado" que preclasifica pero NO
+# es decisión humana — el worker la debe tomar igual. Orden: FIFO por publicación
+# (más antigua primero) + urgencia (cierre más próximo después).
 _SQL_PENDIENTES = """
-SELECT id, Titulo, Descripcion, VINCULOS, Item, Cod_Onu, Fecha_Publicacion
-FROM `{tabla}`
-WHERE estado_gestor IS NULL
-  AND (nombre_clasificador IS NULL OR nombre_clasificador = '')
-ORDER BY id DESC
+SELECT t.id, t.Titulo, t.Descripcion, t.VINCULOS, t.Item, t.Cod_Onu, t.Fecha_Publicacion
+FROM `{tabla}` t
+WHERE t.estado_gestor IS NULL
+  AND NOT EXISTS (
+    SELECT 1 FROM clasificador_ia_log log
+    WHERE log.tabla_origen = %s AND log.fila_id = t.id
+  )
+ORDER BY t.Fecha_Publicacion ASC, t.Fecha_Cierre ASC
 LIMIT %s
 """
 
@@ -59,7 +67,10 @@ def filas_pendientes(tabla: str, limite: int | None = None) -> list[dict]:
     _check(tabla)
     conn = conexion_worker()
     with conn.cursor() as cur:
-        cur.execute(_SQL_PENDIENTES.format(tabla=tabla), (limite or config.lote_max,))
+        cur.execute(
+            _SQL_PENDIENTES.format(tabla=tabla),
+            (tabla, limite or config.lote_max),
+        )
         return list(cur.fetchall())
 
 

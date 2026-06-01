@@ -76,6 +76,14 @@ tr + tr td { border-top: 1px solid #eef1f4; }
    composición "160-5-12,5mg"). */
 .fila-aprob .f-pactivo { min-width: 320px; }
 .fila-aprob .f-comp { min-width: 150px; }
+/* Estado del worker: cuándo procesó su último lote + pendientes por tomar.
+   Verde si <6 min (al día), ámbar si <15 min, rojo si más (delay). */
+.worker-st { padding: 8px 12px; border-radius: 7px; margin: 6px 0 10px;
+        font-size: 13px; border: 1px solid; }
+.worker-ok { background: #e6f5ec; border-color: #1b6b3a; color: #144a26; }
+.worker-warn { background: #fff3e0; border-color: #d68910; color: #7a4e09; }
+.worker-bad { background: #fbe4e1; border-color: #c0392b; color: #7c1f15; }
+
 /* Combobox de pactivo: dropdown propio anclado DEBAJO del campo (reemplaza el
    datalist nativo que ocupaba toda la pantalla). Filtra al teclear, con scroll. */
 .pac-wrap { position: relative; display: inline-block; }
