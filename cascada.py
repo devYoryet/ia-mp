@@ -191,6 +191,13 @@ def _clasificar_fila_impl(
     # Histórico — descripción idéntica ya clasificada por una persona. Un
     # DESCARTE del histórico con soporte bajo no se confía (ver buscar_en_historico).
     p = preclasificador.buscar_en_historico(tabla, descripcion, fila.get("id", 0))
+    # Validar contra catálogo ACTIVO: el histórico puede devolver un pactivo que
+    # ya fue REMOVIDO del catálogo (caso medido 2026-06-01: 'Guante' no está en
+    # Base ni en el diccionario filtrado por clientes activos, pero el histórico
+    # humano lo seguía propagando 7 veces/día). Si el pactivo histórico no está
+    # en pactivos_norm, lo descartamos y la cascada sigue a las siguientes ramas.
+    if p and p.interes == 1 and p.pactivo and normalizar(p.pactivo) not in pactivos_norm:
+        p = None
     if p:
         # CONFLICTO REVISAR: histórico de soporte BAJO (1-2 votos) gana como
         # interés, pero el modelo_descarte entrenado está MUY seguro de descarte.
