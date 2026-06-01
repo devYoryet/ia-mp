@@ -1255,18 +1255,25 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
         _now = _now_chile
         # frontera = MIN(Fecha_Publicacion) de las pendientes (estado_gestor NULL
         # + NO en log). Todo lo publicado ANTES está procesado.
+        # Filtro `> '2000-01-01'`: ignora las zero-dates ('0000-00-00 00:00:00')
+        # que pymysql devolvería como string y romperían .total_seconds(). Hay
+        # 232 zero-dates en Licitaciones_diarias.Fecha_Cierre y la prevención
+        # cubre también Fecha_Publicacion por robustez.
         _mn_ca = _query(
             "SELECT MIN(t.Fecha_Publicacion) m FROM compra_agil t WHERE t.estado_gestor IS NULL "
+            "AND t.Fecha_Publicacion > '2000-01-01' "
             "AND NOT EXISTS (SELECT 1 FROM clasificador_ia_log l "
             "WHERE l.tabla_origen='compra_agil' AND l.fila_id=t.id)"
         )[0]["m"]
         _mn_li = _query(
             "SELECT MIN(t.Fecha_Publicacion) m FROM Licitaciones_diarias t WHERE t.estado_gestor IS NULL "
+            "AND t.Fecha_Publicacion > '2000-01-01' "
             "AND NOT EXISTS (SELECT 1 FROM clasificador_ia_log l "
             "WHERE l.tabla_origen='Licitaciones_diarias' AND l.fila_id=t.id)"
         )[0]["m"]
-        # la pendiente más antigua entre ambas tablas
-        _pend = [x for x in (_mn_ca, _mn_li) if x]
+        # la pendiente más antigua entre ambas tablas (descarta cualquier string
+        # residual por si MIN devolvió zero-date pese al filtro — defensa final)
+        _pend = [x for x in (_mn_ca, _mn_li) if x and not isinstance(x, str)]
         _frontera = min(_pend) if _pend else _now  # si no hay pendientes, al día hasta ahora
         _seg_front = int((_now - _frontera).total_seconds())
         _cls = "ok" if _seg_front < 900 else ("warn" if _seg_front < 3600 else "bad")
