@@ -1197,10 +1197,16 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
     # delay y NO podemos confiar en "vi todo lo publicado hasta las 18:30".
     estado_worker = ""
     try:
-        from datetime import datetime as _dt
-        _now = _dt.now()
-        # ult fila procesada
-        _ult = _query("SELECT MAX(creado_en) u FROM clasificador_ia_log")[0]["u"]
+        from datetime import datetime as _dt, timedelta as _tdh
+        # El container corre en UTC pero el usuario está en Chile (UTC-4). Los
+        # timestamps del LOG (creado_en, escritos con datetime.now() Python) están
+        # en UTC; Fecha_Publicacion viene del scraping y ya está en hora Chile.
+        _TZ_OFFSET = _tdh(hours=4)  # UTC -> Chile
+        _now_chile = _dt.now() - _TZ_OFFSET
+        # ult fila procesada (creado_en está en UTC → convertir a Chile)
+        _ult_utc = _query("SELECT MAX(creado_en) u FROM clasificador_ia_log")[0]["u"]
+        _ult = (_ult_utc - _TZ_OFFSET) if _ult_utc else None
+        _now = _now_chile
         # frontera = MIN(Fecha_Publicacion) de las pendientes (estado_gestor NULL
         # + NO en log). Todo lo publicado ANTES está procesado.
         _mn_ca = _query(
