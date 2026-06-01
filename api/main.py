@@ -913,12 +913,9 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
     hoja = max(1, hoja)
     por_hoja = por_hoja if por_hoja in POR_HOJA_OPCIONES else POR_HOJA_DEFAULT
     estado = estado if estado in _ESTADOS else "pendientes"
-    # Default fecha: ayer+hoy si el usuario no especificó nada (lo que está
-    # procesando ahora + lo que dejó ayer). Para ver todo: rango='todas'.
-    if not rango and not desde and not hasta:
-        rango = "ayer_hoy"
-    if rango == "todas":
-        rango = ""
+    # Sin preset: la fecha se controla con desde/hasta (defaulteado a ayer 18:30
+    # → hoy 18:30 más abajo). Si el revisor borra ambos, ve TODAS las fechas.
+    rango = ""
     cond = [_ESTADOS[estado]]
     args: list = []
     if tabla in TABLAS_VALIDAS:
@@ -937,18 +934,26 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
         cond.append("confianza >= 0.7 AND confianza < 0.85")
     elif conf == "alta":
         cond.append("confianza >= 0.85")
-    # Fecha — preset (rango) o rango personalizado (desde/hasta). Si el revisor
-    # puso desde/hasta, esos MANDAN (se ignora el preset). Acepta fecha sola
-    # (YYYY-MM-DD) o fecha+hora (datetime-local) para cortes por turno.
-    if rango in _RANGOS and not desde and not hasta:
-        cond.append(_RANGOS[rango])
+    # Fecha — por FECHA DE PUBLICACIÓN (cuando salió en mercadopublico), NO por
+    # creado_en (cuándo la IA la procesó). La fecha de publicación vive en la
+    # tabla origen — subconsulta correlacionada por PK. Acepta fecha sola o
+    # datetime-local para cortes por hora/turno.
+    _SQL_PUB_FECHA = (
+        "COALESCE("
+        "(SELECT ca.Fecha_Publicacion FROM compra_agil ca "
+        "WHERE ca.id=clasificador_ia_log.fila_id "
+        "AND clasificador_ia_log.tabla_origen='compra_agil'),"
+        "(SELECT ld.Fecha_Publicacion FROM Licitaciones_diarias ld "
+        "WHERE ld.id=clasificador_ia_log.fila_id "
+        "AND clasificador_ia_log.tabla_origen='Licitaciones_diarias'))"
+    )
     _d = _norm_fecha(desde, fin=False)
     _h = _norm_fecha(hasta, fin=True)
     if _d:
-        cond.append("creado_en >= %s")
+        cond.append(f"{_SQL_PUB_FECHA} >= %s")
         args.append(_d)
     if _h:
-        cond.append("creado_en <= %s")
+        cond.append(f"{_SQL_PUB_FECHA} <= %s")
         args.append(_h)
     # Búsqueda de texto en la descripción (LIKE %X%)
     if busqueda:
@@ -1106,18 +1111,17 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
     from datetime import date as _date, timedelta as _td
     def _dtlocal(v):
         return (v or "").strip().replace(" ", "T")[:16]
+    # Default: ventana de cierre de jornada — ayer 18:30 → hoy 18:30 (ventana de
+    # 24h con corte a las 18:30, el momento de cierre que el equipo usa). El
+    # revisor puede ajustar a NOW si quiere ver lo más reciente.
     if desde:
         desde_val = _dtlocal(desde)
-    elif rango in ("", "ayer_hoy"):
-        desde_val = f"{(_date.today() - _td(days=1)).isoformat()}T00:00"
     else:
-        desde_val = ""
+        desde_val = f"{(_date.today() - _td(days=1)).isoformat()}T18:30"
     if hasta:
         hasta_val = _dtlocal(hasta)
-    elif rango in ("", "ayer_hoy"):
-        hasta_val = f"{_date.today().isoformat()}T23:59"
     else:
-        hasta_val = ""
+        hasta_val = f"{_date.today().isoformat()}T18:30"
 
     filtros = (
         f"<form method=get action='/revision' class=ff>"
@@ -1143,20 +1147,12 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
         + opt("nuevo", "pactivo nuevo", tipo)
         + "</select>"
         "</div>"
-        # ---- línea 2: Fecha (preset + rango)
+        # ---- línea 2: Fecha de PUBLICACIÓN (corte por hora para turnos)
         "<div class=fila-filt>"
-        "<label>Fecha</label>"
-        f"<select name=rango onchange='this.form.submit()'>"
-        + opt("ayer_hoy", "ayer + hoy", rango)
-        + opt("hoy", "solo hoy", rango)
-        + opt("ayer", "solo ayer", rango)
-        + opt("semana", "última semana", rango)
-        + opt("mes", "último mes", rango)
-        + opt("todas", "todas", rango if rango else "todas")
-        + "</select>"
-        f"<label>desde</label><input type=datetime-local name=desde value='{_e(desde_val)}'>"
+        "<label>Publicada desde</label>"
+        f"<input type=datetime-local name=desde value='{_e(desde_val)}'>"
         f"<label>hasta</label><input type=datetime-local name=hasta value='{_e(hasta_val)}'>"
-        "<button type=submit class=sec>aplicar fechas</button>"
+        "<button type=submit class=sec>aplicar</button>"
         "</div>"
         # ---- línea 3: Buscar (texto) · N° licitación · Excel
         "<div class=fila-filt>"
@@ -1194,40 +1190,55 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
     def _fmt_dt(dt):
         return dt.strftime("%d-%m-%Y %H:%M") if dt else "—"
 
-    # Estado del worker: último ciclo + cuántas filas le faltan tomar (las que
-    # están pendientes en el LEGACY y la IA aún no procesó). Sirve para detectar
-    # delay: si "última procesada" es hace mucho, el worker está atrasado.
+    # Estado del worker: HASTA QUÉ PUBLICACIÓN está al día (frontera) + última
+    # fila procesada + cuántas le faltan. La FRONTERA es lo más importante: dice
+    # "todo lo publicado antes de esta fecha YA está procesado". Si la frontera
+    # está cerca de NOW (≤15min) el sistema está al día; si está muy atrás, hay
+    # delay y NO podemos confiar en "vi todo lo publicado hasta las 18:30".
     estado_worker = ""
     try:
+        from datetime import datetime as _dt
+        _now = _dt.now()
+        # ult fila procesada
         _ult = _query("SELECT MAX(creado_en) u FROM clasificador_ia_log")[0]["u"]
-        if _ult:
-            from datetime import datetime as _dt
-            _seg = int((_dt.now() - _ult).total_seconds())
-            if _seg < 60:
-                _hace = f"hace {_seg}s"
-            elif _seg < 3600:
-                _hace = f"hace {_seg // 60} min"
-            else:
-                _hace = f"hace {_seg // 3600}h {(_seg % 3600) // 60}min"
-            _cls = "ok" if _seg < 360 else ("warn" if _seg < 900 else "bad")
-            # cuántas le faltan al worker (pendientes en legacy NO en log)
-            _falt_ca = _query(
-                "SELECT COUNT(*) n FROM compra_agil t WHERE t.estado_gestor IS NULL "
-                "AND NOT EXISTS (SELECT 1 FROM clasificador_ia_log l "
-                "WHERE l.tabla_origen='compra_agil' AND l.fila_id=t.id)"
-            )[0]["n"]
-            _falt_li = _query(
-                "SELECT COUNT(*) n FROM Licitaciones_diarias t WHERE t.estado_gestor IS NULL "
-                "AND NOT EXISTS (SELECT 1 FROM clasificador_ia_log l "
-                "WHERE l.tabla_origen='Licitaciones_diarias' AND l.fila_id=t.id)"
-            )[0]["n"]
-            estado_worker = (
-                f"<div class='worker-st worker-{_cls}'>"
-                f"<b>Worker:</b> última fila procesada {_hace} ({_fmt_dt(_ult)}) "
-                f"· por procesar: {_falt_ca + _falt_li} "
-                f"(compra ágil {_falt_ca} · licitaciones {_falt_li})"
-                f"</div>"
-            )
+        # frontera = MIN(Fecha_Publicacion) de las pendientes (estado_gestor NULL
+        # + NO en log). Todo lo publicado ANTES está procesado.
+        _mn_ca = _query(
+            "SELECT MIN(t.Fecha_Publicacion) m FROM compra_agil t WHERE t.estado_gestor IS NULL "
+            "AND NOT EXISTS (SELECT 1 FROM clasificador_ia_log l "
+            "WHERE l.tabla_origen='compra_agil' AND l.fila_id=t.id)"
+        )[0]["m"]
+        _mn_li = _query(
+            "SELECT MIN(t.Fecha_Publicacion) m FROM Licitaciones_diarias t WHERE t.estado_gestor IS NULL "
+            "AND NOT EXISTS (SELECT 1 FROM clasificador_ia_log l "
+            "WHERE l.tabla_origen='Licitaciones_diarias' AND l.fila_id=t.id)"
+        )[0]["m"]
+        # la pendiente más antigua entre ambas tablas
+        _pend = [x for x in (_mn_ca, _mn_li) if x]
+        _frontera = min(_pend) if _pend else _now  # si no hay pendientes, al día hasta ahora
+        _seg_front = int((_now - _frontera).total_seconds())
+        _cls = "ok" if _seg_front < 900 else ("warn" if _seg_front < 3600 else "bad")
+        _msg_ok = "AL DÍA" if _seg_front < 900 else ("LEVE DELAY" if _seg_front < 3600 else "DELAY")
+        # contadores y "última procesada"
+        _falt_ca = _query(
+            "SELECT COUNT(*) n FROM compra_agil t WHERE t.estado_gestor IS NULL "
+            "AND NOT EXISTS (SELECT 1 FROM clasificador_ia_log l "
+            "WHERE l.tabla_origen='compra_agil' AND l.fila_id=t.id)"
+        )[0]["n"]
+        _falt_li = _query(
+            "SELECT COUNT(*) n FROM Licitaciones_diarias t WHERE t.estado_gestor IS NULL "
+            "AND NOT EXISTS (SELECT 1 FROM clasificador_ia_log l "
+            "WHERE l.tabla_origen='Licitaciones_diarias' AND l.fila_id=t.id)"
+        )[0]["n"]
+        _ult_txt = f"última fila procesada: {_fmt_dt(_ult)}" if _ult else ""
+        estado_worker = (
+            f"<div class='worker-st worker-{_cls}'>"
+            f"<b>Worker {_msg_ok}</b> · todo lo publicado hasta "
+            f"<b>{_fmt_dt(_frontera)}</b> ya fue procesado por la IA. "
+            f"Pendientes en cola del worker: {_falt_ca + _falt_li} "
+            f"(compra ágil {_falt_ca} · licitaciones {_falt_li}). {_ult_txt}"
+            f"</div>"
+        )
     except Exception:  # noqa: BLE001
         pass
 
