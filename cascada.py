@@ -206,7 +206,6 @@ def _clasificar_fila_impl(
                 return Resultado(
                     interes=1,
                     pactivo=None,
-                    pactivo_nuevo=p.pactivo,
                     composicion=None,
                     presentacion=None,
                     confianza=round(p_desc, 3),
@@ -216,6 +215,7 @@ def _clasificar_fila_impl(
                         f"'{p.pactivo}', pero el modelo de descarte está muy "
                         f"seguro de DESCARTE ({p_desc:.2f}). Revisar."
                     ),
+                    pactivo_propuesto=p.pactivo,
                 )
         return Resultado(
             interes=p.interes,
