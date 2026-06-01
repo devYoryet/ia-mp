@@ -1224,7 +1224,17 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
     )
 
     def _fmt_dt(dt):
-        return dt.strftime("%d-%m-%Y %H:%M") if dt else "—"
+        # Defensivo: Fecha_Cierre/Fecha_Publicacion a veces vuelven como string
+        # desde la BD (columna VARCHAR mal tipada). Si no es datetime, mostrar
+        # el string tal cual — antes esto crasheaba el panel (AttributeError).
+        if not dt:
+            return "—"
+        if isinstance(dt, str):
+            return dt[:16] if dt else "—"
+        try:
+            return dt.strftime("%d-%m-%Y %H:%M")
+        except Exception:  # noqa: BLE001
+            return str(dt)[:16]
 
     # Estado del worker: HASTA QUÉ PUBLICACIÓN está al día (frontera) + última
     # fila procesada + cuántas le faltan. La FRONTERA es lo más importante: dice
