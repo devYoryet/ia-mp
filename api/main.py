@@ -924,9 +924,16 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
     hoja = max(1, hoja)
     por_hoja = por_hoja if por_hoja in POR_HOJA_OPCIONES else POR_HOJA_DEFAULT
     estado = estado if estado in _ESTADOS else "pendientes"
-    # Sin preset: la fecha se controla con desde/hasta (defaulteado a ayer 18:30
-    # → hoy 18:30 más abajo). Si el revisor borra ambos, ve TODAS las fechas.
+    # Sin preset: la fecha se controla con desde/hasta. Si el revisor entra a
+    # /revision sin params, aplicamos el default ANTES de construir el WHERE
+    # (no solo en el input visual) — así el conteo y la cola coinciden con lo
+    # que muestra el input desde el primer load (sin esperar a "aplicar").
     rango = ""
+    from datetime import date as _date_d, timedelta as _td_d
+    if not desde:
+        desde = f"{(_date_d.today() - _td_d(days=1)).isoformat()}T18:30"
+    if not hasta:
+        hasta = f"{_date_d.today().isoformat()}T18:30"
     cond = [_ESTADOS[estado]]
     args: list = []
     if tabla in TABLAS_VALIDAS:
@@ -1437,8 +1444,16 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
                 + "</div>"
             )
             razon_html = f"<div class=razon>IA razón: {_e(f.get('razon'))}</div>" if es_admin else ""
+            # COLOR según el VEREDICTO humano (no la propuesta IA): aprobada
+            # respeta el color original; corregida → naranja; descartada → rojo.
+            if f.get("feedback_correcto") == 1:
+                tipo_cls_final = tipo_cls
+            elif (f.get("feedback_pactivo") or "").strip():
+                tipo_cls_final = "t-nuevo"  # corregida
+            else:
+                tipo_cls_final = "t-descarte"  # descartada
             bloques.append(
-                f"<div class='fila revisada {tipo_cls}'>"
+                f"<div class='fila revisada {tipo_cls_final}'>"
                 f"<div class=fila-head><div style='width:24px'></div>{meta_html}</div>"
                 f"<div class=desc>{_e((f.get('descripcion') or '')[:300])}</div>"
                 f"{ia_prop}{humano}{razon_html}"

@@ -93,6 +93,13 @@ tr + tr td { border-top: 1px solid #eef1f4; }
 .hu-mot { color: #7a4e09; }
 .badge.b-warn { background: #fdeccf; color: #7a4e09; }
 
+/* Filas REVISADAS también se colorean según el VEREDICTO humano (homologar
+   diseño con la vista de pendientes). Aprobada=verde, corregida=naranja,
+   descartada=rojo — sin importar lo que la IA propuso originalmente. */
+.fila.revisada { border: 2px solid #1b6b3a; background: #e6f5ec; }
+.fila.revisada.t-descarte { border-color: #c0392b; background: #fbe4e1; }
+.fila.revisada.t-nuevo { border-color: #d68910; background: #fdeccf; }
+
 /* /reglas — correcciones agrupadas por día (colapsable). */
 .dia-grp { margin: 8px 0; border: 1px solid #d9e0ea; border-radius: 7px;
         background: #f9fafc; }
