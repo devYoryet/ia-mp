@@ -84,6 +84,15 @@ tr + tr td { border-top: 1px solid #eef1f4; }
 .worker-warn { background: #fff3e0; border-color: #d68910; color: #7a4e09; }
 .worker-bad { background: #fbe4e1; border-color: #c0392b; color: #7c1f15; }
 
+/* Bloque IA propuso / Humano decidió en filas REVISADAS. */
+.ia-prop { background: #f5f7fa; border-left: 3px solid #2f6fb0; padding: 6px 10px;
+        margin: 6px 0 4px; font-size: 13px; }
+.hu-dec { background: #ecf3ec; border-left: 3px solid #1b6b3a; padding: 6px 10px;
+        margin: 0 0 6px; font-size: 13px; }
+.hu-rev { color: #6b7689; font-style: italic; }
+.hu-mot { color: #7a4e09; }
+.badge.b-warn { background: #fdeccf; color: #7a4e09; }
+
 /* Combobox de pactivo: dropdown propio anclado DEBAJO del campo (reemplaza el
    datalist nativo que ocupaba toda la pantalla). Filtra al teclear, con scroll. */
 .pac-wrap { position: relative; display: inline-block; }

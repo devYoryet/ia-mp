@@ -806,13 +806,14 @@ def revision_xlsx(tabla: str = "", tipo: str = "", metodo: str = "", conf: str =
     )
 
 
-def qs_extras_str(tabla, tipo, metodo, conf, rango, desde, hasta, estado, busqueda, licitacion):
+def qs_extras_str(tabla, tipo, metodo, conf, rango, desde, hasta, estado, busqueda, licitacion, tipo_rev=""):
     """Querystring común para preservar filtros al armar links/export."""
     pares = [
         ("tabla", tabla), ("tipo", tipo), ("metodo", metodo), ("conf", conf),
         ("rango", rango), ("desde", desde), ("hasta", hasta),
         ("estado", estado if estado != "pendientes" else ""),
         ("busqueda", busqueda), ("licitacion", licitacion),
+        ("tipo_rev", tipo_rev),
     ]
     return "&".join(f"{k}={v}" for k, v in pares if v)
 
@@ -831,6 +832,15 @@ _METODOS = {
 
 
 _ESTADOS = {"pendientes": "revisado=0", "revisadas": "revisado=1", "todas": "1=1"}
+# Subfiltros dentro de "revisadas" — para contar cuántas se aprobaron, se
+# corrigieron (cambiaron el pactivo) o se descartaron en un rango de fechas.
+_TIPOS_REV = {
+    "aprobadas":   "feedback_correcto=1",
+    "corregidas":  "(feedback_correcto=0 AND feedback_pactivo IS NOT NULL "
+                   "AND TRIM(feedback_pactivo)<>'')",
+    "descartadas": "(feedback_correcto=0 AND (feedback_pactivo IS NULL "
+                   "OR TRIM(feedback_pactivo)=''))",
+}
 _RANGOS = {
     "ayer_hoy": "creado_en >= CURDATE() - INTERVAL 1 DAY",
     "hoy": "creado_en >= CURDATE()",
@@ -907,7 +917,8 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
              tipo: str = "", metodo: str = "", conf: str = "", por_hoja: int = 0,
              estado: str = "pendientes", rango: str = "",
              desde: str = "", hasta: str = "",
-             busqueda: str = "", licitacion: str = "") -> str:
+             busqueda: str = "", licitacion: str = "",
+             tipo_rev: str = "") -> str:
     usuario = usuario_actual(request)
     es_admin = _es_admin(usuario)
     hoja = max(1, hoja)
@@ -926,6 +937,9 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
     if metodo in _METODOS:
         cond.append("metodo=%s")
         args.append(metodo)
+    # Subfiltro dentro de "revisadas": aprobadas / corregidas / descartadas.
+    if estado == "revisadas" and tipo_rev in _TIPOS_REV:
+        cond.append(_TIPOS_REV[tipo_rev])
     # Filtro por banda de confianza — para priorizar los casos dudosos (<0.7)
     # o, al revés, repasar masivamente los seguros (>=0.85) con un solo OK.
     if conf == "baja":
@@ -1086,6 +1100,7 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
         cur = {"tabla": tabla, "tipo": tipo, "metodo": metodo,
                "conf": conf, "rango": rango, "desde": desde, "hasta": hasta,
                "busqueda": busqueda, "licitacion": licitacion,
+               "tipo_rev": tipo_rev,
                "estado": estado if estado != "pendientes" else "",
                "por_hoja": str(por_hoja) if por_hoja != POR_HOJA_DEFAULT else ""}
         cur[clave] = valor
@@ -1102,7 +1117,7 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
         return f'<option value="{_e(value)}"{sel}>{_e(label)}</option>'
 
     csv_qs = qs_extras_str(tabla, tipo, metodo, conf, rango, desde, hasta,
-                            estado, busqueda, licitacion)
+                            estado, busqueda, licitacion, tipo_rev)
 
     # Prellenado de los campos de fecha: si el revisor no fijó un rango propio,
     # mostramos el rango efectivo que se está cargando (ayer 00:00 → hoy 23:59)
@@ -1123,6 +1138,19 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
     else:
         hasta_val = f"{_date.today().isoformat()}T18:30"
 
+    # Subfiltro VEREDICTO solo cuando estado=revisadas (aprobadas/corregidas/desc).
+    sel_veredicto = ""
+    if estado == "revisadas":
+        sel_veredicto = (
+            "<label>Veredicto</label>"
+            "<select name=tipo_rev onchange='this.form.submit()'>"
+            + opt("", "todas", tipo_rev)
+            + opt("aprobadas", "✓ aprobadas", tipo_rev)
+            + opt("corregidas", "✏ corregidas", tipo_rev)
+            + opt("descartadas", "✗ descartadas", tipo_rev)
+            + "</select>"
+        )
+
     filtros = (
         f"<form method=get action='/revision' class=ff>"
         # ---- línea 1: Estado · Tabla · Tipo
@@ -1133,7 +1161,8 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
         + opt("revisadas", "revisadas", estado)
         + opt("todas", "todas", estado)
         + "</select>"
-        "<label>Tabla</label>"
+        + sel_veredicto
+        + "<label>Tabla</label>"
         f"<select name=tabla onchange='this.form.submit()'>"
         + opt("", "todas", tabla)
         + opt("compra_agil", "compra ágil", tabla)
@@ -1375,23 +1404,44 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
         # veredicto humano (aprobada / corregida) y sus notas para auditoría.
         if revisada:
             if f.get("feedback_correcto") == 1:
-                veredicto = "<span class='badge b-int'>✓ APROBADA</span>"
+                veredicto_etiq = "<span class='badge b-int'>✓ APROBADA</span>"
+                fp_disp = ""
+                fn_disp = ""
             else:
-                # corregida o descartada; feedback_pactivo solo si corrigió
                 fp = (f.get("feedback_pactivo") or "").strip()
                 fn = (f.get("feedback_notas") or "").strip()
-                etiqueta = "✏ CORREGIDA" if fp else "✗ DESCARTADA"
-                detalle = (f" → <b>{_e(fp)}</b>" if fp else "")
-                if fn:
-                    detalle += f" · motivo: {_e(fn)}"
-                veredicto = f"<span class='badge b-desc'>{etiqueta}</span>{detalle}"
-            razon_html = f"<div class=razon>IA: {_e(f.get('razon'))}</div>" if es_admin else ""
+                if fp:
+                    veredicto_etiq = (
+                        f"<span class='badge b-warn'>✏ CORREGIDA</span> "
+                        f"→ <b>{_e(fp)}</b>"
+                    )
+                else:
+                    veredicto_etiq = "<span class='badge b-desc'>✗ DESCARTADA</span>"
+                fp_disp = fp
+                fn_disp = fn
+            # Lo que PROPUSO la IA + lo que DECIDIÓ el humano (lado a lado).
+            _int_ia = "INTERÉS" if f.get("interes_sugerido") == 1 else "DESCARTE"
+            _p_ia = _e(f.get("pactivo_sugerido") or "—")
+            _c_ia = _e(f.get("composicion_sugerida") or "—")
+            _pr_ia = _e(f.get("presentacion_sugerida") or "—")
+            ia_prop = (
+                f"<div class=ia-prop><b>IA propuso:</b> {_int_ia} · "
+                f"pactivo <b>{_p_ia}</b> · comp {_c_ia} · pres {_pr_ia}</div>"
+            )
+            quien = _e(f.get("revisado_por") or "—")
+            cuando = _fmt_dt(f.get("revisado_en"))
+            humano = (
+                f"<div class=hu-dec>{veredicto_etiq} · "
+                f"<span class=hu-rev>por <b>{quien}</b> el {cuando}</span>"
+                + (f" · <span class=hu-mot>motivo: {_e(fn_disp)}</span>" if fn_disp else "")
+                + "</div>"
+            )
+            razon_html = f"<div class=razon>IA razón: {_e(f.get('razon'))}</div>" if es_admin else ""
             bloques.append(
                 f"<div class='fila revisada {tipo_cls}'>"
                 f"<div class=fila-head><div style='width:24px'></div>{meta_html}</div>"
                 f"<div class=desc>{_e((f.get('descripcion') or '')[:300])}</div>"
-                f"{razon_html}"
-                f"<div class=veredicto>{veredicto}</div>"
+                f"{ia_prop}{humano}{razon_html}"
                 f"</div>"
             )
             continue
