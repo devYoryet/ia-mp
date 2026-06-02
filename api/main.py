@@ -836,8 +836,12 @@ _ESTADOS = {"pendientes": "revisado=0", "revisadas": "revisado=1", "todas": "1=1
 # corrigieron (cambiaron el pactivo) o se descartaron en un rango de fechas.
 _TIPOS_REV = {
     "aprobadas":   "feedback_correcto=1",
-    "corregidas":  "(feedback_correcto=0 AND feedback_pactivo IS NOT NULL "
-                   "AND TRIM(feedback_pactivo)<>'')",
+    # 'corregidas' = TODAS las que el humano cambió algo respecto a la IA:
+    #   - cambió el pactivo (feedback_pactivo lleno)
+    #   - cambió la decisión a descarte (feedback_pactivo vacío)
+    #   - rescató un descarte poniendo pactivo
+    # Pedido del usuario 2026-06-02: que aparezcan ambas en el mismo filtro.
+    "corregidas":  "feedback_correcto=0",
     "descartadas": "(feedback_correcto=0 AND (feedback_pactivo IS NULL "
                    "OR TRIM(feedback_pactivo)=''))",
 }

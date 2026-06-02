@@ -282,7 +282,13 @@ def _iniciales(nombre: str) -> str:
 def layout(titulo: str, cuerpo: str, usuario: dict | None = None) -> str:
     # Aprobadores (no panel-completo): nav reducido a la cola de revisión.
     _email = ((usuario or {}).get("email") or "").strip().lower()
-    _items = NAV if _email in _EMAILS_PANEL_COMPLETO else (("Cola de revisión", "/revision"),)
+    # Aprobadores ven Cola + Reglas (necesitan consultar las reglas vigentes y
+    # el motivo de cada corrección). Solo admin/gerencia ve el resto (gastos,
+    # estadísticas, backtest, legacy).
+    _items = NAV if _email in _EMAILS_PANEL_COMPLETO else (
+        ("Cola de revisión", "/revision"),
+        ("Reglas", "/reglas"),
+    )
     nav = "".join(f"<a href='{h}'>{escape(t)}</a>" for t, h in _items)
     if usuario and usuario.get("name"):
         chip = (
