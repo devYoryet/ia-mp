@@ -170,6 +170,25 @@ def clasificar_fila(
         tabla, fila, taxonomia, pactivos_norm, descartes, cruce, combinaciones,
         modelo_descarte, ejemplos, indice_inverso, modelo_pactivo,
     )
+    # FINAL GUARD del PACTIVO: una rama puede haber dejado un pactivo que ya
+    # NO está en el catálogo activo (cliente desactivado, decisión de negocio).
+    # Caso medido 2026-06-02: 'Polividona Yodada', 'Yodo', 'Yodados', 'Yodo-
+    # Potasio' siguen saliendo aunque ya no están en pactivos_norm — vía Claude
+    # (no validaba) y vía regla_diccionario con combinaciones antiguas. Las
+    # ramas cruce_base, historico y modelo_pactivo YA validan en su propio
+    # cuerpo; este guard cierra las restantes. Anular y bajar a descarte; la
+    # cola humana lo procesa como FN si corresponde.
+    if r.interes == 1 and r.pactivo and normalizar(r.pactivo) not in pactivos_norm:
+        r = Resultado(
+            interes=0,
+            pactivo=None,
+            composicion=None,
+            presentacion=None,
+            confianza=r.confianza,
+            metodo=f"{r.metodo}_pact_inactivo",
+            razon=(f"Pactivo '{r.pactivo}' propuesto por {r.metodo} no está en "
+                   f"el catálogo activo. " + (r.razon or "")),
+        )
     if r.interes == 1 and r.pactivo:
         if r.composicion:
             r.composicion = preclasificador.canonizar_comp(
