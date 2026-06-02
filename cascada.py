@@ -160,15 +160,19 @@ def clasificar_fila(
     ejemplos: str = "",
     indice_inverso: "Optional[dict]" = None,
     modelo_pactivo=None,
+    marcas_texto: str = "",
 ) -> Resultado:
     """Clasifica y aplica el VALIDADOR FINAL de composición: cualquier rama de la
     cascada (cruce verbatim, regla, modelo, Claude libre) puede dejar una comp que
     NO existe para el pactivo. `preclasificador.canonizar_comp` la confirma contra
     el catálogo del pactivo (corrige decimal 7.5↔7,5; manda a 'Sin cla' lo que no
-    existe, p.ej. un volumen del envase). Punto único — vale para TODAS las ramas."""
+    existe, p.ej. un volumen del envase). Punto único — vale para TODAS las ramas.
+
+    `marcas_texto` (opcional) llega solo a Claude como bloque cacheable de
+    `marcas → pactivo` inequívocas del catálogo activo (ver `marcas.cargar_marcas_para_prompt`)."""
     r = _clasificar_fila_impl(
         tabla, fila, taxonomia, pactivos_norm, descartes, cruce, combinaciones,
-        modelo_descarte, ejemplos, indice_inverso, modelo_pactivo,
+        modelo_descarte, ejemplos, indice_inverso, modelo_pactivo, marcas_texto,
     )
     # FINAL GUARD del PACTIVO: una rama puede haber dejado un pactivo que ya
     # NO está en el catálogo activo (cliente desactivado, decisión de negocio).
@@ -213,6 +217,7 @@ def _clasificar_fila_impl(
     ejemplos: str = "",
     indice_inverso: "Optional[dict]" = None,
     modelo_pactivo=None,
+    marcas_texto: str = "",
 ) -> Resultado:
     descripcion = fila.get("Descripcion")
     titulo = fila.get("Titulo")
@@ -466,7 +471,7 @@ def _clasificar_fila_impl(
     )
     c, uso = cc.clasificar(
         descripcion or "", titulo or "", vinculos or "", taxonomia, ejemplos,
-        candidatos=candidatos,
+        candidatos=candidatos, marcas_texto=marcas_texto,
     )
     comp, pres = c.composicion, c.presentacion
     if c.interes == 1:

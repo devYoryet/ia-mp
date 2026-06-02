@@ -67,3 +67,74 @@ def buscar_marca(texto: str, mapa: dict) -> str | None:
     palabras = set(_TOKEN.findall(normalizar(texto)))
     encontrados = {mapa[w] for w in palabras if w in mapa}
     return next(iter(encontrados)) if len(encontrados) == 1 else None
+
+
+# Sustantivos genéricos que aparecen en `palabra2` pero NO son marcas comerciales
+# (caen al prompt como ruido y producen FPs). Lista construida por inspección:
+# son palabras del lenguaje farma común — formas, presentaciones, insumos —
+# que ningún cliente confundiría con un nombre de fantasía.
+_GENERICAS = frozenset({
+    "tabletas", "comprimidos", "capsulas", "jarabe", "ampolla", "ampollas",
+    "vaselina", "alcohol", "agua", "suero", "solucion", "solucao", "spray",
+    "gotas", "crema", "ungüento", "unguento", "gel", "polvo", "sobre", "frasco",
+    "insulina", "protector", "guante", "guantes", "mascarilla", "mascarillas",
+    "vendaje", "vendajes", "aposito", "apositos", "sonda", "sondas",
+    "jeringa", "jeringas", "cateter", "cateteres", "tubo", "tubos",
+    "torula", "torulas", "gasa", "gasas", "compresa", "compresas",
+    "parche", "parches", "tableta", "capsula", "cápsula",
+})
+
+
+def cargar_marcas_para_prompt(
+    pactivos_activos_norm: "set[str] | dict[str, str]",
+    max_marcas: int = 1500,
+) -> str:
+    """Bloque de texto que se inyecta como PISTA cacheable en el system prompt
+    de Claude. Marca → pactivo INEQUÍVOCA cuyo pactivo está en catálogo activo.
+
+    Cuidado (ver [[fallos-y-lecciones]]): NO es mapeo determinista — el mapeo
+    determinista palabra2→pactivo en cascada falló con 38% acierto en mayo. Acá
+    Claude decide; las marcas son contexto cacheable (cero costo por fila gracias
+    a prompt caching). Filtros: marca >= 5 chars, pactivo en catálogo activo,
+    marca distinta de un sustantivo genérico (_GENERICAS) y distinta de cualquier
+    pactivo activo (para no llamar "marca" a un genérico)."""
+    activos_set = pactivos_activos_norm if isinstance(pactivos_activos_norm, set) \
+        else set(pactivos_activos_norm.keys())
+    conn = conexion_worker()
+    candidatos: "dict[str, set[str]]" = defaultdict(set)
+    with conn.cursor() as cur:
+        cur.execute(_SQL.format(db=config.db_diccionario))
+        for r in cur.fetchall():
+            pact = (r["pactivo"] or "").strip()
+            if not pact or normalizar(pact) not in activos_set:
+                continue
+            for tok in (r.get("palabra2") or "").split(","):
+                marca = tok.strip()
+                k = normalizar(marca)
+                if len(k) < _LARGO_MIN:
+                    continue
+                if k in _GENERICAS or k in activos_set:
+                    continue
+                candidatos[marca].add(pact)
+    # solo marcas inequívocas (1 pactivo)
+    mapa = {m: next(iter(v)) for m, v in candidatos.items() if len(v) == 1}
+    if not mapa:
+        log.warning("Marcas prompt: 0 marcas inequívocas — pista vacía")
+        return ""
+    pares = sorted(mapa.items())  # estable para prompt caching
+    truncado = len(pares) > max_marcas
+    if truncado:
+        pares = pares[:max_marcas]
+    cuerpo = "\n".join(f"- {marca} → {pact}" for marca, pact in pares)
+    log.info("Marcas prompt: %d marcas inequívocas%s",
+             len(pares), " (truncado)" if truncado else "")
+    return (
+        "MARCAS COMERCIALES CONOCIDAS — PISTA del diccionario interno (no es "
+        "veredicto; Claude decide según contexto):\n"
+        "Si la glosa contiene una de estas marcas como palabra completa y el "
+        "contexto encaja con el pactivo indicado, preferir ese pactivo. "
+        "Si la glosa indica una variante compuesta (marca seguida de 'D', "
+        "'Plus', 'HCT', 'Hzda', '/12,5', etc.), considerar el pactivo COMPUESTO "
+        "correspondiente en el catálogo activo en vez del simple.\n\n"
+        f"{cuerpo}\n"
+    )

@@ -132,17 +132,24 @@ def clasificar(
     taxonomia: Taxonomia,
     ejemplos: str = "",
     candidatos: "list[str] | None" = None,
+    marcas_texto: str = "",
 ) -> "tuple[Clasificacion, Uso]":
     """Clasifica una fila con Claude. La lista controlada (y los ejemplos
     validados, si hay) se cachean entre llamadas con prompt caching.
     `candidatos` (opcional) son los pactivos del catálogo cuyas palabras
     aparecen en la descripción — se pasan como PISTA en el mensaje de usuario,
     NO acotan el catálogo (sigue completo en el system prompt cacheado).
+    `marcas_texto` (opcional) es un bloque cacheable con marcas inequívocas
+    (marca → pactivo del catálogo activo) construido en `marcas.cargar_marcas_para_prompt`.
+    NO es veredicto — Claude usa el mapeo como pista, lo cual reduce alucinaciones
+    de marcas comerciales sin acotar el catálogo.
     Devuelve la clasificación y el costo/tokens de la llamada."""
     sistema = [
         {"type": "text", "text": SISTEMA_BASE},
         {"type": "text", "text": taxonomia.texto_para_prompt()},
     ]
+    if marcas_texto:
+        sistema.append({"type": "text", "text": marcas_texto})
     if ejemplos:
         sistema.append({"type": "text", "text": ejemplos})
     # el último bloque del prefijo estable lleva el breakpoint de caché

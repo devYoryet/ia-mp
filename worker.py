@@ -32,6 +32,7 @@ from descarte_items import cargar_descartes
 from descarte_modelo import cargar_modelo_descarte
 from modelo_pactivo import cargar_modelo_pactivo
 from ejemplos import cargar_ejemplos
+from marcas import cargar_marcas_para_prompt
 from preclasificador import precargar_comp_pres
 from reglas import indexar_combinaciones, indexar_inverso_pactivos, indexar_pactivos
 from reglas_negocio import cargar_feedback
@@ -67,10 +68,22 @@ def cargar_recursos() -> dict:
         "modelo_pactivo": cargar_modelo_pactivo(),
         "contexto": contexto,
     }
+    # Pista cacheable de marcas comerciales para el prompt de Claude (R2 2026-06-02):
+    # marcas→pactivo inequívocas del catálogo activo. NO es mapeo determinista
+    # (eso falló en mayo, ver [[fallos-y-lecciones]]); Claude decide con esto
+    # como contexto. Falla blanda: si no se puede cargar, el prompt va sin
+    # marcas (comportamiento previo).
+    try:
+        recursos["marcas_texto"] = cargar_marcas_para_prompt(recursos["pactivos_norm"])
+    except Exception as exc:  # noqa: BLE001
+        log.warning("No se pudo cargar marcas para prompt (%s) — sigo sin pista", exc)
+        recursos["marcas_texto"] = ""
     log.info(
-        "Recursos: %d pactivos (%d combinados), %d composiciones, %d presentaciones.",
+        "Recursos: %d pactivos (%d combinados), %d composiciones, %d presentaciones, "
+        "marcas_prompt: %d chars.",
         len(taxonomia.pactivos), len(recursos["combinaciones"]),
         len(taxonomia.composiciones), len(taxonomia.presentaciones),
+        len(recursos["marcas_texto"]),
     )
     return recursos
 
@@ -95,6 +108,7 @@ def ciclo(r: dict) -> int:
                     r["modelo_descarte"], r["contexto"],
                     indice_inverso=r["indice_inverso"],
                     modelo_pactivo=r["modelo_pactivo"],
+                    marcas_texto=r.get("marcas_texto", ""),
                 )
                 if es_test:
                     reintentar(lambda: escritor.registrar_backtest(tabla, fila, resultado))
