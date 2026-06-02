@@ -39,6 +39,20 @@ from taxonomia import Taxonomia
 # discos de antibiograma. Descarte duro por palabra clave (ver veto en la cascada).
 VETO_SENSIDISCOS = re.compile(r"sensi\s*disco|senci\s*disco", re.IGNORECASE)
 
+# 'Cinta Adhesiva Médica' es el pactivo que más sobre-asigna modelo_pactivo:
+# medido 7 FP/9 vía modelo_pactivo en 30d. Si el modelo lo predice pero la glosa
+# trae señales claras NO-médicas (oficina, ferretería, embalaje, uro test,
+# masking, doble cara, fixomul→apósito), VETAR la predicción del modelo y dejar
+# que la cascada siga (modelo_descarte/Claude). Criterio consolidado de las
+# correcciones de Carolina del 25/29-may y 01-jun.
+VETO_CINTA_NO_MEDICA = re.compile(
+    r"\b(?:embalaj?e|embalar|marbete|escritorio|oficina|enseñanza|ensenanza|"
+    r"doble\s*(?:cara|contacto)|uro\s*test|urotest|construccion|construcción|"
+    r"ferreter[ií]a|aislante|electric[ao]?|eléctric[ao]?|vulcani[sz]ante|"
+    r"americana|duct\s*tape|masking|aseo|fixomul)\b",
+    re.IGNORECASE,
+)
+
 # Excipientes: lo que viene tras "Excip:" NO es el principio activo (es relleno:
 # lactosa, hidróxido de aluminio, estearato de magnesio...). Matchear ahí causaba
 # 'Fexofenadina ... Excip: ... aluminio ... magnesio' → 'Aluminio-Magnesio'.
@@ -332,6 +346,15 @@ def _clasificar_fila_impl(
     # Si el modelo predice un meta-pactivo (Adjunto), lo ignoramos: su
     # asignación es contextual y solo Claude la decide. Igualmente si la
     # clase predicha no está en el catálogo activo de hoy (cliente desactivó).
+    if (pact_pred and conf >= config.umbral_modelo_pactivo
+            and normalizar(pact_pred) not in {normalizar(p) for p in PACTIVOS_NO_MATCH_DIRECTO}
+            and normalizar(pact_pred) in pactivos_norm):
+        # Veto puntual: el modelo sobre-asigna 'Cinta Adhesiva Médica' a cintas
+        # de oficina/ferretería/embalaje. Si la glosa trae esas señales, se deja
+        # que la cascada siga (modelo_descarte → Claude con la regla restrictiva).
+        if (normalizar(pact_pred) == normalizar("Cinta Adhesiva Médica")
+                and VETO_CINTA_NO_MEDICA.search(descripcion or "")):
+            pact_pred = None
     if (pact_pred and conf >= config.umbral_modelo_pactivo
             and normalizar(pact_pred) not in {normalizar(p) for p in PACTIVOS_NO_MATCH_DIRECTO}
             and normalizar(pact_pred) in pactivos_norm):
