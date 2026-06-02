@@ -2256,12 +2256,29 @@ def reglas(request: Request, msg: str = "") -> str:
     reglas_ = [x for x in items if x["tipo"] == "regla"]
     corr = [x for x in items if x["tipo"] == "correccion"]
 
+    # creado_en está guardado en UTC del container; lo mostramos en hora Chile
+    # (UTC-4). Mismo offset que usamos en /revision.
+    from datetime import timedelta as _td2
+    _TZ_CL = _td2(hours=4)
+    def _ts_chile(v):
+        if not v:
+            return ""
+        if hasattr(v, "strftime"):
+            return (v - _TZ_CL).strftime("%Y-%m-%d %H:%M")
+        return str(v)[:16]
+    def _dia_chile(v):
+        if not v:
+            return ""
+        if hasattr(v, "strftime"):
+            return (v - _TZ_CL).strftime("%Y-%m-%d")
+        return str(v)[:10]
+
     def tabla(rows):
         if not rows:
             return "<div class=vacio>Sin registros.</div>"
         f = "".join(
             f"<tr><td>{_e(r['texto'])}</td><td>{_e(r['creado_por'])}</td>"
-            f"<td>{_e(str(r['creado_en'])[:16])}</td></tr>" for r in rows
+            f"<td>{_e(_ts_chile(r['creado_en']))}</td></tr>" for r in rows
         )
         return f"<table><tr><th>Texto</th><th>Por</th><th>Fecha</th></tr>{f}</table>"
 
@@ -2273,14 +2290,14 @@ def reglas(request: Request, msg: str = "") -> str:
             return "<div class=vacio>Sin registros.</div>"
         por_dia: dict = {}
         for r in rows:
-            dia = str(r["creado_en"])[:10]
+            dia = _dia_chile(r["creado_en"])  # día agrupador ya en hora Chile
             por_dia.setdefault(dia, []).append(r)
         out = []
         for dia in sorted(por_dia.keys(), reverse=True):
             lst = por_dia[dia]
             filas = "".join(
                 f"<tr><td>{_e(r['texto'])}</td><td>{_e(r['creado_por'])}</td>"
-                f"<td>{_e(str(r['creado_en'])[11:16])}</td></tr>"
+                f"<td>{_e(_ts_chile(r['creado_en'])[11:16])}</td></tr>"
                 for r in lst
             )
             out.append(
