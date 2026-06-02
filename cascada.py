@@ -53,6 +53,22 @@ VETO_CINTA_NO_MEDICA = re.compile(
     re.IGNORECASE,
 )
 
+# 'Lubricante' en Pharmatender = SOLO lubricante íntimo/vaginal/personal/sexual.
+# El catálogo activo lo mantiene por farmacia comunitaria. Pero la regla_diccionario
+# matchea CUALQUIER 'lubricante' en la glosa, atrapando lubricantes industriales,
+# aceites de turbina, DW-40, silicona para instrumental, etc. Veto amplio: si el
+# pactivo predicho es 'Lubricante' y la glosa contiene palabras de uso
+# industrial/instrumental, anular. Criterio Carolina 2026-06-02: "solo el íntimo".
+VETO_LUBRICANTE_NO_INTIMO = re.compile(
+    r"\b(?:turbina|contra\s*[aá]ngulo|instrumental|"
+    r"sint[eé]tico|silicona\s*lubricante|aceite|"
+    r"dw-?40|anticorrosivo|ferreter[ií]a|industrial|"
+    r"motor|m[áa]quina|maquinaria|mec[áa]nic[oa]|"
+    r"penetrante|grasa|esmeril|engranaj?e|sello|"
+    r"spray\s+(?:lubricante|sintetico))\b",
+    re.IGNORECASE,
+)
+
 # 'Glicerina': sobre-asignada vía regla_diccionario a productos NO médicos
 # (manómetros industriales, dispensadores Ecolab, jabones líquidos comerciales,
 # DW-40). Criterio Carolina: solo glicerina/jabón médico. Verificado contra TPs
@@ -315,6 +331,8 @@ def _clasificar_fila_impl(
         pact_n = normalizar(pactivo)
         desc_lower = (descripcion or "")
         if pact_n == normalizar("Glicerina") and VETO_GLICERINA_NO_MEDICA.search(desc_lower):
+            pactivo = None
+        elif pact_n == normalizar("Lubricante") and VETO_LUBRICANTE_NO_INTIMO.search(desc_lower):
             pactivo = None
         elif pact_n in ANTIBIOTICOS and VETO_ANTIBIOT_NO_MEDICA.search(desc_lower):
             pactivo = None
