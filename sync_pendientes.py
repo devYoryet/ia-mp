@@ -76,14 +76,23 @@ def _aplicar_item(cur, item: dict, revisor: str, ahora: datetime) -> str:
     # Decisión → estado y campos a escribir
     if dec in ("corregir", "descartar") and not mot:
         return "sin_motivo"
+    # REGLA DE ORO: aprobado o corregido como INTERÉS (estado=1) exige los TRES
+    # campos (pactivo, composición, presentación) no vacíos. Sin esto el sistema
+    # legacy queda con filas verdes huérfanas (ej. medido 2026-06-02: 'Bloqueador
+    # Solar' aprobado con comp y pres vacíos). El revisor debe completar antes de
+    # poder aprobar; el caso queda contabilizado como 'incompleto' y se le avisa.
     if dec == "descartar":
         estado, p, c, pr, correcto = 0, None, None, None, 0
     elif dec == "corregir":
-        estado, p, c, pr, correcto = 1, pact or None, comp or None, pres or None, 0
+        if not (pact and comp and pres):
+            return "incompleto"
+        estado, p, c, pr, correcto = 1, pact, comp, pres, 0
     else:  # aprobar
         estado = reg["interes_sugerido"]
         if estado == 1:
-            p, c, pr = pact or None, comp or None, pres or None
+            if not (pact and comp and pres):
+                return "incompleto"
+            p, c, pr = pact, comp, pres
         else:
             p, c, pr = None, None, None
         correcto = 1
@@ -116,13 +125,16 @@ def _aplicar_item(cur, item: dict, revisor: str, ahora: datetime) -> str:
     return "aplicada"
 
 
-def aplicar_lote(lote: dict) -> tuple[int, int, int]:
+def aplicar_lote(lote: dict) -> tuple[int, int, int, int]:
     """Aplica TODO el lote en UNA transacción. Devuelve
-    (aplicadas, ya_revisadas, sin_motivo). Si falla la conexión a la BD,
-    propaga la excepción — el JSON queda en pending para reintento."""
+    (aplicadas, ya_revisadas, sin_motivo, incompletas). Si falla la conexión a la BD,
+    propaga la excepción — el JSON queda en pending para reintento.
+
+    `incompletas`: filas marcadas interés sin los 3 campos (pact+comp+pres) — la
+    regla de oro las rechaza y se le avisa al revisor para completarlas."""
     revisor = (lote.get("revisor") or "anónimo")[:80]
     ahora = datetime.now()
-    aplicadas = ya_revisadas = sin_motivo = 0
+    aplicadas = ya_revisadas = sin_motivo = incompletas = 0
     conn = conectar()
     try:
         with conn.cursor() as cur:
@@ -134,10 +146,12 @@ def aplicar_lote(lote: dict) -> tuple[int, int, int]:
                     ya_revisadas += 1
                 elif r == "sin_motivo":
                     sin_motivo += 1
+                elif r == "incompleto":
+                    incompletas += 1
         conn.commit()
     finally:
         conn.close()
-    return aplicadas, ya_revisadas, sin_motivo
+    return aplicadas, ya_revisadas, sin_motivo, incompletas
 
 
 def guardar_pending(lote: dict) -> Path:
@@ -171,7 +185,7 @@ def procesar_pendientes() -> dict:
             resumen["lotes_fallidos"] += 1
             continue
         try:
-            aplic, ya, _ = aplicar_lote(lote)
+            aplic, ya, _, _ = aplicar_lote(lote)
             resumen["filas_aplicadas"] += aplic
             resumen["filas_ya_revisadas"] += ya
             fp.unlink()  # éxito: se borra el JSON

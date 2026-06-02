@@ -1825,6 +1825,7 @@ def revisar_hoja(
 
     aplicadas = 0
     ya_revisadas = 0
+    incompletas = 0
     pendiente = False
     if items:
         import json as _json
@@ -1837,8 +1838,8 @@ def revisar_hoja(
         # PASO CRÍTICO: persistir a disco con write+rename atómico
         fp = _sp.guardar_pending(lote)
         try:
-            aplic, ya, _ = _sp.aplicar_lote(lote)
-            aplicadas, ya_revisadas = aplic, ya
+            aplic, ya, _, incompl = _sp.aplicar_lote(lote)
+            aplicadas, ya_revisadas, incompletas = aplic, ya, incompl
             fp.unlink()  # éxito: borrar el JSON
         except Exception as exc:  # noqa: BLE001
             # JSON queda en pending. Reintenta cron + botón "Sincronizar".
@@ -1857,6 +1858,9 @@ def revisar_hoja(
         msg += f" {saltadas} destildada(s) quedaron pendientes."
     if sin_motivo_v:
         msg += f" {sin_motivo_v} sin motivo obligatorio."
+    if incompletas:
+        msg += (f" ⚠ {incompletas} fila(s) marcada(s) interés SIN pactivo/comp/"
+                f"presentación — completá los 3 campos antes de aprobar.")
     if pendiente:
         msg = (f"⚠ Lote ({len(items)} fila[s]) GUARDADO en outbox pero no se "
                f"sincronizó con clásico (BD inaccesible). Reintento automático "
