@@ -159,15 +159,23 @@ def _clasificar_fila_impl(
     hit = cruce_base.buscar(cruce, descripcion)
     if hit:
         pactivo_b, comp_b, pres_b = hit
-        return Resultado(
-            interes=1,
-            pactivo=pactivo_b,
-            composicion=comp_b,
-            presentacion=pres_b,
-            confianza=0.95,
-            metodo="cruce_base",
-            razon="Descripción idéntica a una OC real del catálogo Base.",
-        )
+        # Validar contra catálogo ACTIVO: el cruce devuelve VERBATIM lo que
+        # estaba en una OC histórica, pero ese pactivo puede haber sido REMOVIDO
+        # del catálogo (cliente desactivado, decisión de negocio). Caso medido
+        # 2026-06-02: 'Medio de Contraste'/'Guante'/'Iohexol' siguen apareciendo
+        # vía cruce aunque ya no están en pactivos_norm. Si no está en el
+        # catálogo activo, descartamos el hit y la cascada sigue a las siguientes
+        # ramas. Igual molde que en la rama 'historico'.
+        if pactivo_b and normalizar(pactivo_b) in pactivos_norm:
+            return Resultado(
+                interes=1,
+                pactivo=pactivo_b,
+                composicion=comp_b,
+                presentacion=pres_b,
+                confianza=0.95,
+                metodo="cruce_base",
+                razon="Descripción idéntica a una OC real del catálogo Base.",
+            )
 
     # Descarte por rubro — Item (compra_agil) / Cod_Onu (Licitaciones_diarias):
     # rubro que el histórico humano descartó SIEMPRE (>= N vistas, 0 de interés).
