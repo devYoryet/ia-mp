@@ -53,6 +53,41 @@ VETO_CINTA_NO_MEDICA = re.compile(
     re.IGNORECASE,
 )
 
+# 'Glicerina': sobre-asignada vía regla_diccionario a productos NO médicos
+# (manómetros industriales, dispensadores Ecolab, jabones líquidos comerciales,
+# DW-40). Criterio Carolina: solo glicerina/jabón médico. Verificado contra TPs
+# para NO romper 'BASE JABÓN GLICERINA' y similares (no usan estas palabras).
+VETO_GLICERINA_NO_MEDICA = re.compile(
+    r"\b(?:manometro|manómetro|dw-?40|anticorrosivo|ecolab)\b",
+    re.IGNORECASE,
+)
+
+# Antibióticos en FORMATO NO-MEDICAMENTO: tests, tiras reactivas, kits de
+# susceptibilidad, antibiograma, cinta epsilométrica, cemento óseo dental.
+# Aplica cuando el match identifica un antibiótico (lista_ANTIBIOTICOS) y la
+# glosa trae señales claras de que NO es el fármaco. Generaliza los casos de
+# Gentamicina (cemento óseo), Vancomicina (tiras E-test), y futuros.
+VETO_ANTIBIOT_NO_MEDICA = re.compile(
+    r"\b(?:tiras?|test|reactiv[oa]s?|epsilom\w+|e[\s\-]?test|"
+    r"medidora|antibiograma|disco\s*de\s*susceptibilidad|"
+    r"sensi\s*discos?|senci\s*discos?|"
+    r"cemento\s*(?:[oóáa]seo)?|"
+    r"kit\s+(?:de\s+|\d+\s+)?(?:tira|prueba|epsilom|test|sensi))\b",
+    re.IGNORECASE,
+)
+# Lista pragmática de antibióticos del catálogo activo (se compara normalizado).
+ANTIBIOTICOS = {
+    "gentamicina", "vancomicina", "amikacina", "cefadroxilo",
+    "piperacilina-tazobactam", "ampicilina", "ciprofloxacino",
+    "ceftriaxona", "cefotaxima", "ceftazidima", "meropenem",
+    "imipenem", "ertapenem", "clindamicina", "metronidazol",
+    "azitromicina", "claritromicina", "eritromicina",
+    "tetraciclina", "doxiciclina", "linezolid", "linezolida",
+    "tobramicina", "kanamicina", "estreptomicina",
+    "trimetoprima", "sulfametoxazol", "nitrofurantoina",
+    "rifampicina", "isoniazida", "etambutol",
+}
+
 # Excipientes: lo que viene tras "Excip:" NO es el principio activo (es relleno:
 # lactosa, hidróxido de aluminio, estearato de magnesio...). Matchear ahí causaba
 # 'Fexofenadina ... Excip: ... aluminio ... magnesio' → 'Aluminio-Magnesio'.
@@ -272,6 +307,17 @@ def _clasificar_fila_impl(
     por_combinacion = pactivo is not None
     if not pactivo:
         pactivo = reglas.match_diccionario(desc_match, pactivos_norm)
+    # Vetos puntuales: el match identificó un pactivo medible pero la glosa trae
+    # señales claras de que es un PRODUCTO NO médico con ese nombre. Anular el
+    # pactivo y dejar que la cascada siga (modelo_descarte → Claude). Igual
+    # molde que VETO_CINTA_NO_MEDICA en la rama modelo_pactivo.
+    if pactivo:
+        pact_n = normalizar(pactivo)
+        desc_lower = (descripcion or "")
+        if pact_n == normalizar("Glicerina") and VETO_GLICERINA_NO_MEDICA.search(desc_lower):
+            pactivo = None
+        elif pact_n in ANTIBIOTICOS and VETO_ANTIBIOT_NO_MEDICA.search(desc_lower):
+            pactivo = None
     if pactivo:
         # VETO del modelo entrenado sobre el match SIMPLE de diccionario.
         # match_diccionario hace un match de texto contra un catálogo que
