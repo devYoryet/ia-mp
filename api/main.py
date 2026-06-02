@@ -1498,9 +1498,11 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
             )
 
         # Línea de edición — MISMOS name= en ambas vistas (el POST a /revisar-hoja
-        # es idéntico). En la vista técnica los descartes se colapsan; para
-        # aprobadores siempre se ve pactivo/comp/pres.
-        linea_oculta = " hidden" if (es_admin and interes == 0 and not es_nuevo) else ""
+        # es idéntico). Antes se ocultaba la edición para el admin cuando la fila
+        # era descarte (vista técnica colapsada), pero eso impedía al admin
+        # rescatar un descarte. Pedido del usuario 2026-06-02: admin DEBE poder
+        # editar todo lo pendiente, igual que Carolina.
+        linea_oculta = ""
         edicion = (
             f"<input type=hidden name=log_id value='{f['id']}'>"
             f"<div class='linea linea-edicion' data-row='{n}'{linea_oculta}>"
