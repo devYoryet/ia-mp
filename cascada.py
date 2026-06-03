@@ -40,16 +40,22 @@ from taxonomia import Taxonomia
 VETO_SENSIDISCOS = re.compile(r"sensi\s*disco|senci\s*disco", re.IGNORECASE)
 
 # 'Cinta Adhesiva Médica' es el pactivo que más sobre-asigna modelo_pactivo:
-# medido 7 FP/9 vía modelo_pactivo en 30d. Si el modelo lo predice pero la glosa
-# trae señales claras NO-médicas (oficina, ferretería, embalaje, uro test,
-# masking, doble cara, fixomul→apósito), VETAR la predicción del modelo y dejar
-# que la cascada siga (modelo_descarte/Claude). Criterio consolidado de las
-# correcciones de Carolina del 25/29-may y 01-jun.
+# medido 7 FP/9 vía modelo_pactivo en 30d, y 20 FP/35 en 7d post-deploy.
+# El 80% del error del modelo viene de este único pactivo. Si el modelo lo
+# predice pero la glosa trae señales claras NO-médicas (oficina, ferretería,
+# embalaje, uro test, masking, doble cara, fixomul→apósito, ENMASCARAR,
+# CINTA DE PAPEL, CINTA METRICA, PASTA ADHESIVA), VETAR la predicción del
+# modelo y dejar que la cascada siga (modelo_descarte/Claude). Criterio
+# consolidado correcciones Carolina del 25/29-may, 01-jun y 03-jun.
 VETO_CINTA_NO_MEDICA = re.compile(
     r"\b(?:embalaj?e|embalar|marbete|escritorio|oficina|enseñanza|ensenanza|"
     r"doble\s*(?:cara|contacto)|uro\s*test|urotest|construccion|construcción|"
     r"ferreter[ií]a|aislante|electric[ao]?|eléctric[ao]?|vulcani[sz]ante|"
-    r"americana|duct\s*tape|masking|aseo|fixomul)\b",
+    r"americana|duct\s*tape|masking|aseo|fixomul|"
+    r"enmascarar|enmascara|enmascarado|cinta\s+de\s+papel|cinta\s+papel|"
+    r"cinta\s+m[eé]trica|cinta\s+metro|pasta\s+adhesiva|cinta\s+vidrio|"
+    r"cinta\s+(?:plastic|pl[áa]stica)|cinta\s+adhesiva\s+(?:enmascarar|papel|"
+    r"de\s+vidrio|de\s+pintor))\b",
     re.IGNORECASE,
 )
 
