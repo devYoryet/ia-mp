@@ -27,7 +27,7 @@ import escritor
 from cascada import clasificar_fila
 from config import config
 from cruce_base import cargar_cruce_base
-from db import reintentar
+from db import conexion_worker, reintentar
 from descarte_items import cargar_descartes
 from descarte_modelo import cargar_modelo_descarte
 from modelo_pactivo import cargar_modelo_pactivo
@@ -142,13 +142,28 @@ def main() -> None:
 
     recursos = cargar_recursos()
     ultimo_refresco = time.time()
+    ultima_version_extras = _version_pactivos_extra()
     una_vez = "--once" in sys.argv
     while True:
         try:
+            # Refresco diario completo (Base + diccionario + clientes + modelos)
             if not una_vez and time.time() - ultimo_refresco >= REFRESCO_SEGUNDOS:
                 log.info("Refresco diario de las estructuras en memoria.")
                 recursos = cargar_recursos()
                 ultimo_refresco = time.time()
+                ultima_version_extras = _version_pactivos_extra()
+            else:
+                # Refresco INMEDIATO si cambió pactivos_extra (R8 2026-06-03):
+                # cuando un admin agrega/desactiva un pactivo desde el panel,
+                # detectamos el cambio comparando MAX(agregado_en, desactivado_en)
+                # contra el último visto. Recarga rápida (~5 s), sin esperar 24h.
+                v = _version_pactivos_extra()
+                if v and v != ultima_version_extras:
+                    log.info("Cambio en pactivos_extra detectado (%s -> %s); recargando.",
+                             ultima_version_extras, v)
+                    recursos = cargar_recursos()
+                    ultima_version_extras = v
+                    ultimo_refresco = time.time()
             n = ciclo(recursos)
             log.info("Ciclo terminado: %d filas procesadas.", n)
         except Exception as exc:  # noqa: BLE001
@@ -156,6 +171,26 @@ def main() -> None:
         if una_vez:
             break
         time.sleep(config.intervalo_segundos)
+
+
+def _version_pactivos_extra() -> str:
+    """Hash simple del estado de pactivos_extra para detectar cambios.
+    Devuelve una cadena estable mientras no haya altas/bajas; cambia cuando
+    se agrega o desactiva un pactivo. Si la tabla no existe, devuelve "".
+    Falla blanda — un error no rompe el loop."""
+    try:
+        with conexion_worker().cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) n, "
+                "COALESCE(MAX(agregado_en), 0) ag, "
+                "COALESCE(MAX(desactivado_en), 0) de, "
+                "SUM(activo) act "
+                "FROM pactivos_extra"
+            )
+            r = cur.fetchone()
+            return f"{r['n']}|{r['ag']}|{r['de']}|{r['act']}"
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 if __name__ == "__main__":

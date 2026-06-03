@@ -2349,6 +2349,145 @@ def agregar_regla(request: Request, texto: str = Form(...)):
     return RedirectResponse("/reglas?msg=Regla agregada.", status_code=303)
 
 
+# --------------------------------------------- Pactivos extra (R8 2026-06-03) --
+# Catálogo manual: permite agregar pactivos farma legítimos que NO están en Base
+# ni los pide ningún cliente activo (caso 'Aztreonam-Avibactam'). Se SUMAN al
+# catálogo activo. El worker detecta el cambio en el próximo ciclo (≤3 min)
+# comparando version(MAX agregado_en, MAX desactivado_en, n filas, suma activos).
+@app.get("/pactivos-extra", response_class=HTMLResponse)
+def pactivos_extra_get(request: Request, msg: str = "") -> str:
+    usuario = usuario_actual(request)
+    try:
+        items = _query(
+            "SELECT id, pactivo, agregado_por, agregado_en, activo, motivo, "
+            "desactivado_por, desactivado_en "
+            "FROM pactivos_extra ORDER BY activo DESC, agregado_en DESC LIMIT 500"
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _layout("Error", f"<div class=vacio>{_e(exc)}</div>", usuario=usuario)
+
+    from datetime import timedelta as _td2
+    _TZ_CL = _td2(hours=4)
+    def _ts(v):
+        if not v:
+            return ""
+        if hasattr(v, "strftime"):
+            return (v - _TZ_CL).strftime("%Y-%m-%d %H:%M")
+        return str(v)[:16]
+
+    activos = [r for r in items if r["activo"]]
+    inactivos = [r for r in items if not r["activo"]]
+
+    def tabla(rows, mostrar_acciones: bool):
+        if not rows:
+            return "<div class=vacio>Sin registros.</div>"
+        f = []
+        for r in rows:
+            acc = ""
+            if mostrar_acciones:
+                acc = (
+                    f"<form method=post action='/pactivos-extra/{r['id']}/desactivar' "
+                    f"style='display:inline'>"
+                    f"<button type=submit onclick=\"return confirm('Desactivar "
+                    f"{_e(r['pactivo'])}?')\">desactivar</button></form>"
+                )
+            inactivo_info = ""
+            if not r["activo"] and r["desactivado_por"]:
+                inactivo_info = (
+                    f"<br><small>desactivado por {_e(r['desactivado_por'])} "
+                    f"{_e(_ts(r['desactivado_en']))}</small>"
+                )
+            f.append(
+                f"<tr><td><b>{_e(r['pactivo'])}</b>{inactivo_info}</td>"
+                f"<td>{_e(r['agregado_por'])}</td>"
+                f"<td>{_e(_ts(r['agregado_en']))}</td>"
+                f"<td><small>{_e((r['motivo'] or '')[:200])}</small></td>"
+                f"<td>{acc}</td></tr>"
+            )
+        return ("<table><tr><th>Pactivo</th><th>Por</th><th>Fecha</th>"
+                "<th>Motivo</th><th></th></tr>" + "".join(f) + "</table>")
+
+    aviso = f"<div class=aviso>{_e(msg)}</div>" if msg else ""
+    cuerpo = (
+        "<h1>Pactivos extra — catálogo manual</h1>"
+        + aviso
+        + "<p>Agrega pactivos farma legítimos que NO están en Base ni los pide "
+        "ningún cliente activo. Se SUMAN al catálogo activo del clasificador. "
+        "El worker los recoge en menos de 3 minutos.</p>"
+        "<form class=alta method=post action='/pactivos-extra'>"
+        "<input type=text name=pactivo placeholder='Nombre del pactivo (ej. Aztreonam-Avibactam)' required>"
+        "<input type=text name=motivo placeholder='Motivo / contexto (opcional pero recomendado)'>"
+        "<button type=submit>Agregar al catálogo</button></form>"
+        f"<h2>Activos ({len(activos)})</h2>"
+        + tabla(activos, mostrar_acciones=True)
+        + f"<h2>Desactivados ({len(inactivos)})</h2>"
+        + tabla(inactivos, mostrar_acciones=False)
+    )
+    return _layout("Pactivos extra", cuerpo, usuario=usuario)
+
+
+@app.post("/pactivos-extra")
+def pactivos_extra_post(
+    request: Request,
+    pactivo: str = Form(...),
+    motivo: str = Form(""),
+):
+    pact = (pactivo or "").strip()[:255]
+    mot = (motivo or "").strip()[:5000] or None
+    if not pact:
+        return RedirectResponse("/pactivos-extra?msg=Pactivo vacío.", status_code=303)
+    u = usuario_actual(request)
+    por = ((u["name"] if u else "") or "").strip()[:80] or "anónimo"
+    conn = conectar()
+    try:
+        with conn.cursor() as cur:
+            # idempotente: si ya existía (activo o no), reactivar y actualizar
+            cur.execute("SELECT id, activo FROM pactivos_extra WHERE pactivo=%s", (pact,))
+            ex = cur.fetchone()
+            if ex:
+                cur.execute(
+                    "UPDATE pactivos_extra SET activo=1, desactivado_en=NULL, "
+                    "desactivado_por=NULL, motivo=COALESCE(%s, motivo) WHERE id=%s",
+                    (mot, ex["id"]),
+                )
+                msg = (f"Pactivo '{pact}' reactivado." if not ex["activo"]
+                       else f"Pactivo '{pact}' ya estaba activo (motivo actualizado).")
+            else:
+                cur.execute(
+                    "INSERT INTO pactivos_extra (pactivo, agregado_por, agregado_en, "
+                    "motivo, activo) VALUES (%s,%s,%s,%s,1)",
+                    (pact, por, datetime.now(), mot),
+                )
+                msg = f"Pactivo '{pact}' agregado. Worker lo recogerá en <3 min."
+        conn.commit()
+    except Exception as exc:  # noqa: BLE001
+        msg = f"Error: {exc}"
+    finally:
+        conn.close()
+    return RedirectResponse(f"/pactivos-extra?msg={msg}", status_code=303)
+
+
+@app.post("/pactivos-extra/{id_}/desactivar")
+def pactivos_extra_desactivar(request: Request, id_: int):
+    u = usuario_actual(request)
+    por = ((u["name"] if u else "") or "").strip()[:80] or "anónimo"
+    conn = conectar()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE pactivos_extra SET activo=0, desactivado_en=%s, "
+                "desactivado_por=%s WHERE id=%s",
+                (datetime.now(), por, id_),
+            )
+        conn.commit()
+        msg = f"Pactivo id={id_} desactivado. Worker lo verá en <3 min."
+    except Exception as exc:  # noqa: BLE001
+        msg = f"Error: {exc}"
+    finally:
+        conn.close()
+    return RedirectResponse(f"/pactivos-extra?msg={msg}", status_code=303)
+
+
 @app.get("/salud")
 def salud():
     try:

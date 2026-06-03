@@ -104,20 +104,46 @@ def _pactivos_de_clientes_activos(ruts: set[str]) -> set[str]:
         return set()
 
 
+def _pactivos_extra_manuales() -> set[str]:
+    """Pactivos sumados manualmente al catálogo desde el CRUD del panel
+    (`pactivos_extra` con activo=1). Permiten incluir farmas legítimos que NO
+    están en Base ni en ningún cliente activo (caso medido 2026-06-02:
+    'Aztreonam-Avibactam' agregado al diccionario por Carolina, sin cliente
+    vivo que lo pida). Devuelve set de pactivos NORMALIZADOS."""
+    host = os.getenv("MYSQL_HOST", "10.0.0.69")
+    port = int(os.getenv("MYSQL_PORT", "3306"))
+    user = os.getenv("MYSQL_USER", "root")
+    pw = os.getenv("MYSQL_PASSWORD", "")
+    db = os.getenv("MYSQL_DB", "licitaciones_diarias_total_farma")
+    if not pw:
+        return set()
+    try:
+        with _conn(host, port, user, pw, db) as c, c.cursor() as cur:
+            cur.execute("SELECT pactivo FROM pactivos_extra WHERE activo=1")
+            return {normalizar(r["pactivo"]) for r in cur.fetchall() if r["pactivo"]}
+    except Exception as exc:  # noqa: BLE001
+        log.warning("pactivos_extra no disponible (%s) — sin agregados manuales", exc)
+        return set()
+
+
 def construir_filtro_activo() -> "set[str] | None":
-    """Devuelve el set de pactivos NORMALIZADOS que están "activos" (en algún
-    cliente activo + whitelist). Si no se puede consultar prime/principal_app,
-    devuelve None y la taxonomía no aplica filtro (fallback seguro: catálogo
-    completo, comportamiento anterior).
+    """Devuelve el set de pactivos NORMALIZADOS que están "activos":
+    union de (pactivos en clientes activos) + whitelist + pactivos_extra manuales.
 
     El filtro se aplica al DELTA (pactivos del diccionario que NO están en
     `0001_td_oc.Base`). Los de Base son sagrados — no se filtran.
+
+    Si no se puede consultar prime/principal_app Y no hay pactivos_extra,
+    devuelve None y la taxonomía no aplica filtro (fallback seguro: catálogo
+    completo, comportamiento anterior).
     """
     ruts = _ruts_activos_prime()
-    if not ruts:
+    extras = _pactivos_extra_manuales()
+    if not ruts and not extras:
         return None
-    activos = _pactivos_de_clientes_activos(ruts)
-    log.info("Filtro activo: %d RUTs activos, %d pactivos en clientes activos",
-             len(ruts), len(activos))
-    # Whitelist (pactivos META que siempre se conservan) se suma normalizada
-    return activos | {normalizar(p) for p in WHITELIST}
+    activos = _pactivos_de_clientes_activos(ruts) if ruts else set()
+    log.info(
+        "Filtro activo: %d RUTs activos, %d pactivos en clientes, %d pactivos_extra manuales",
+        len(ruts), len(activos), len(extras),
+    )
+    return activos | extras | {normalizar(p) for p in WHITELIST}

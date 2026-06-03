@@ -264,6 +264,31 @@ def cargar_taxonomia() -> Taxonomia:
                 continue
             _registrar(f["p"], f["c"], f["m"])
 
+        # 3) catálogo MANUAL — pactivos_extra del CRUD del panel (R8 2026-06-02).
+        # Permite agregar farmas legítimos que NO están en Base ni en diccionario
+        # de clasificación (caso 'Aztreonam-Avibactam' — Carolina lo agregó al
+        # diccionario, pero ningún cliente lo pide; este CRUD le da entrada al
+        # catálogo activo sin esperar que un cliente lo registre). Los pactivos
+        # que YA estaban en Base / diccionario solo aportan registro idempotente.
+        try:
+            cur.execute(
+                "SELECT pactivo p, comp_default c, pres_default m "
+                "FROM pactivos_extra WHERE activo=1"
+            )
+            n_extra = 0
+            for f in cur.fetchall():
+                _registrar(f["p"], f["c"], f["m"])
+                n_extra += 1
+            import logging
+            logging.getLogger("taxonomia").info(
+                "pactivos_extra (CRUD manual): %d sumados al catálogo", n_extra,
+            )
+        except Exception as exc:  # noqa: BLE001
+            import logging
+            logging.getLogger("taxonomia").warning(
+                "pactivos_extra no disponible (%s) — solo Base + diccionario", exc,
+            )
+
     # Construye Taxonomia y reporta el efecto del filtro
     tax = Taxonomia(
         pactivos=sorted(pactivos),

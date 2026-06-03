@@ -253,6 +253,7 @@ NAV = (
     ("Backtest", "/comparacion"),
     ("Cola de revisión", "/revision"),
     ("Reglas", "/reglas"),
+    ("Pactivos extra", "/pactivos-extra"),
     ("Legacy", "/legacy"),
 )
 
