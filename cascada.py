@@ -65,13 +65,19 @@ VETO_CINTA_NO_MEDICA = re.compile(
 # aceites de turbina, DW-40, silicona para instrumental, etc. Veto amplio: si el
 # pactivo predicho es 'Lubricante' y la glosa contiene palabras de uso
 # industrial/instrumental, anular. Criterio Carolina 2026-06-02: "solo el íntimo".
+# Ampliado 2026-06-03 tras 9 FP/11 medidos en 14d: empaquetadura, afloja tuercas,
+# desoxidante, adhesivo, base de silicona, alimenticio, lubriclav, autoclave, NSF.
 VETO_LUBRICANTE_NO_INTIMO = re.compile(
     r"\b(?:turbina|contra\s*[aá]ngulo|instrumental|"
     r"sint[eé]tico|silicona\s*lubricante|aceite|"
     r"dw-?40|anticorrosivo|ferreter[ií]a|industrial|"
     r"motor|m[áa]quina|maquinaria|mec[áa]nic[oa]|"
     r"penetrante|grasa|esmeril|engranaj?e|sello|"
-    r"spray\s+(?:lubricante|sintetico))\b",
+    r"spray\s+(?:lubricante|sintetico)|"
+    r"empaquetadura(?:s)?|afloja\s*tuerca(?:s)?|desoxidante|"
+    r"adhesivo|base\s+de\s+silicona|alimenticio|lubriclav|"
+    r"autoclave|nsf|equipo|mantenimiento|"
+    r"oxida(?:nte|cion|ción)|antioxidante|antifriccion|antifricción)\b",
     re.IGNORECASE,
 )
 
