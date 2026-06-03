@@ -37,6 +37,7 @@ from descarte_modelo import cargar_modelo_descarte, prob_descarte  # noqa: E402
 from reglas import normalizar  # noqa: E402
 
 from api.auth import router as auth_router, usuario_actual  # noqa: E402
+from api.ui import EMAILS_PACTIVOS_EXTRA  # noqa: E402
 from api.legacy import router as legacy_router  # noqa: E402
 from api.ui import layout as _layout  # noqa: E402
 
@@ -2354,9 +2355,19 @@ def agregar_regla(request: Request, texto: str = Form(...)):
 # ni los pide ningún cliente activo (caso 'Aztreonam-Avibactam'). Se SUMAN al
 # catálogo activo. El worker detecta el cambio en el próximo ciclo (≤3 min)
 # comparando version(MAX agregado_en, MAX desactivado_en, n filas, suma activos).
+def _puede_pactivos_extra(usuario: dict | None) -> bool:
+    """Solo admins + Carolina (clasificadora). Defensa en profundidad: el item
+    del NAV se esconde, pero igual hay que blindar los handlers — alguien
+    podría adivinar la URL."""
+    email = ((usuario or {}).get("email") or "").strip().lower()
+    return email in EMAILS_PACTIVOS_EXTRA
+
+
 @app.get("/pactivos-extra", response_class=HTMLResponse)
 def pactivos_extra_get(request: Request, msg: str = "") -> str:
     usuario = usuario_actual(request)
+    if not _puede_pactivos_extra(usuario):
+        return RedirectResponse("/revision", status_code=303)
     try:
         items = _query(
             "SELECT id, pactivo, agregado_por, agregado_en, activo, motivo, "
@@ -2432,6 +2443,8 @@ def pactivos_extra_post(
     pactivo: str = Form(...),
     motivo: str = Form(""),
 ):
+    if not _puede_pactivos_extra(usuario_actual(request)):
+        return RedirectResponse("/revision", status_code=303)
     pact = (pactivo or "").strip()[:255]
     mot = (motivo or "").strip()[:5000] or None
     if not pact:
@@ -2470,6 +2483,8 @@ def pactivos_extra_post(
 @app.post("/pactivos-extra/{id_}/desactivar")
 def pactivos_extra_desactivar(request: Request, id_: int):
     u = usuario_actual(request)
+    if not _puede_pactivos_extra(u):
+        return RedirectResponse("/revision", status_code=303)
     por = ((u["name"] if u else "") or "").strip()[:80] or "anónimo"
     conn = conectar()
     try:

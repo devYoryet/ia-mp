@@ -257,6 +257,16 @@ NAV = (
     ("Legacy", "/legacy"),
 )
 
+# Quiénes pueden ver / usar el CRUD de pactivos_extra: los 3 del panel completo
+# + Carolina (clasificadora con permiso explícito de Yoryet 2026-06-03 para que
+# pueda agregar pactivos farma desde el panel cuando los necesite).
+EMAILS_PACTIVOS_EXTRA = {
+    "y.danoun@pharmatender.cl",
+    "m.moraga@pharmatender.cl",
+    "m.saavedra@pharmatender.cl",
+    "c.burgos@pharmatender.cl",
+}
+
 # Quiénes ven el panel COMPLETO (resumen de gastos, estadísticas, backtest,
 # reglas, legacy). El resto son APROBADORES: solo la cola de revisión, y al
 # ingresar van directo a /revision. Debe coincidir con _EMAILS_GASTOS en main.py.
@@ -285,11 +295,21 @@ def layout(titulo: str, cuerpo: str, usuario: dict | None = None) -> str:
     _email = ((usuario or {}).get("email") or "").strip().lower()
     # Aprobadores ven Cola + Reglas (necesitan consultar las reglas vigentes y
     # el motivo de cada corrección). Solo admin/gerencia ve el resto (gastos,
-    # estadísticas, backtest, legacy).
-    _items = NAV if _email in _EMAILS_PANEL_COMPLETO else (
-        ("Cola de revisión", "/revision"),
-        ("Reglas", "/reglas"),
-    )
+    # estadísticas, backtest, legacy). Carolina (clasificadora) además puede
+    # agregar pactivos al catálogo manual (ver EMAILS_PACTIVOS_EXTRA).
+    if _email in _EMAILS_PANEL_COMPLETO:
+        _items = NAV
+    elif _email in EMAILS_PACTIVOS_EXTRA:
+        _items = (
+            ("Cola de revisión", "/revision"),
+            ("Reglas", "/reglas"),
+            ("Pactivos extra", "/pactivos-extra"),
+        )
+    else:
+        _items = (
+            ("Cola de revisión", "/revision"),
+            ("Reglas", "/reglas"),
+        )
     nav = "".join(f"<a href='{h}'>{escape(t)}</a>" for t, h in _items)
     if usuario and usuario.get("name"):
         chip = (
