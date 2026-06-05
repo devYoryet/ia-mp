@@ -57,6 +57,17 @@ _CLAVES_GENERICAS = {
     "segun lo solicitado", "segun requerimiento", "segun requerimientos",
     "segun especificaciones", "segun especificacion", "segun cotizacion",
     "adjunto", "anexo", "varios", "otros", "segun orden de compra",
+    # Ampliación 2026-06-05 tras backtest 06-04 con FP en cruce_base:
+    # - "CANASTA 2" → Benzocaina (6 FP) y similares: CANASTA N° X son agrupadores
+    #   de productos, no identifican uno específico (la regla 8 maneja Adjunto).
+    # - "CLIP ULTRACORTO FENESTRADO..." → Benzocaina-Cetilpiridino (11 FP):
+    #   coletilla histórica que matcheaba mal.
+    "canasta", "canasta 2", "canasta 3", "canasta 4", "canasta 5",
+    "canasta 6", "canasta 7", "canasta 8", "canasta 9",
+    "canasta n 1", "canasta n 2", "canasta n 3", "canasta n 4",
+    "canasta n 5", "canasta n 6", "canasta n 7", "canasta n 8", "canasta n 9",
+    "clip ultracorto", "clip ultracorto fenestrado",
+    "set irrigacion", "set de irrigacion",
 }
 
 # Fuentes históricas de OC reales con clasificación humana. Cada una declara

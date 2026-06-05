@@ -158,7 +158,41 @@ VETO_CINTA_NO_MEDICA = re.compile(
     r"enmascarar|enmascara|enmascarado|cinta\s+de\s+papel|cinta\s+papel|"
     r"cinta\s+m[eé]trica|cinta\s+metro|pasta\s+adhesiva|cinta\s+vidrio|"
     r"cinta\s+(?:plastic|pl[áa]stica)|cinta\s+adhesiva\s+(?:enmascarar|papel|"
-    r"de\s+vidrio|de\s+pintor))\b",
+    r"de\s+vidrio|de\s+pintor)|"
+    # Ampliación 2026-06-05: cintas de impresora/plotter/ribbon que el modelo
+    # confundía como "Cinta Adhesiva Médica" (caso medido: 21 FP/día con
+    # glosas tipo "702-0696 CINTA COLOR YMCKO 800300-350LA").
+    r"ymcko|cinta\s+color|color\s+ymcko|"
+    r"impresora|impresion|ribbon\b|tonner|toner|plotter|cinta\s+plotter|"
+    r"cinta\s+(?:de\s+)?(?:imp|impresi[oó]n|toner|tinta))\b",
+    re.IGNORECASE,
+)
+
+# AGUJA HIPODÉRMICA — IA confunde con 'Aguja de insulina'. Caso medido 18 FP/06-04:
+# "AGUJA 19 X 1 1/2 HIPODERMICA DESECHABLE". Aguja hipodérmica genérica NO es la
+# misma que aguja de insulina (calibre/uso distinto). Si el pactivo predicho es
+# Aguja de insulina y la glosa dice 'hipoderm', anular y dejar caer a Claude.
+VETO_AGUJA_HIPODERMICA_NO_INSULINA = re.compile(
+    r"\b(?:aguja\s+hipoderm|hipoderm[ií]ca?)\b",
+    re.IGNORECASE,
+)
+
+# EDTA, ácido tioglicólico, formol — reactivos de lab, NO 'Gel Conductor' ni
+# pactivos farma. Caso medido 5 FP/06-04: "EDTA 7% SOLUCION FRASCO" → Gel
+# Conductor (claude).
+VETO_REACTIVOS_LAB = re.compile(
+    r"\b(?:edta|[áa]cido\s+tioglic[oó]lico|tioglicolato|"
+    r"formol\s+(?:tampon|buffer|para\s+(?:lab|biopsia))|"
+    r"formalina)\b",
+    re.IGNORECASE,
+)
+
+# CAMPO QUIRÚRGICO, MICROBRUSH, ACRÍLICO DENTAL — insumos no farma puntuales.
+# Caso medido 06-04: 8 FP "Paquete Quirurgico" + 10 FP "Otros insumos Pisa".
+VETO_NO_FARMA_PUNTUALES_2 = re.compile(
+    r"\b(?:campo\s+quir[uú]rgico|microbrush|acr[ií]lico\s+dental|"
+    r"banda\s+matriz\s+dental|carpule|composite\s+dental|fresa\s+dental|"
+    r"goma\s+dique|spray\s+oclu)\b",
     re.IGNORECASE,
 )
 
@@ -365,6 +399,10 @@ def _clasificar_fila_impl(
          "Test de Schirmer — test oftalmológico, no fármaco."),
         (VETO_INSUMOS_PUNTUALES, "veto_insumos_puntuales",
          "Insumo quirúrgico/endodóntico puntual — no fármaco."),
+        (VETO_REACTIVOS_LAB, "veto_reactivos_lab",
+         "Reactivo de laboratorio (EDTA / tioglicolato / formol) — no fármaco."),
+        (VETO_NO_FARMA_PUNTUALES_2, "veto_no_farma_2",
+         "Insumo no farma (campo quirúrgico / microbrush / dental) — no fármaco."),
     ]
     for regex, met, razon in _vetos:
         if regex.search(desc_o):
@@ -582,6 +620,11 @@ def _clasificar_fila_impl(
         if (normalizar(pact_pred) == normalizar("Cinta Adhesiva Médica")
                 and VETO_CINTA_NO_MEDICA.search(descripcion or "")):
             pact_pred = None
+        # Aguja de insulina con glosa "aguja hipodérmica" — son cosas distintas
+        # (calibre/uso). Caso medido 06-04: 18 FP.
+        elif (normalizar(pact_pred) == normalizar("Aguja de insulina")
+              and VETO_AGUJA_HIPODERMICA_NO_INSULINA.search(descripcion or "")):
+            pact_pred = None
         # Veto SUFIJO COMPUESTO: si el modelo predice un pactivo SIMPLE (sin
         # guión) pero la glosa indica compuesto (D, Plus, HCT, dosis dual X/Y),
         # no confiar — Claude con la regla 270 arma el compuesto. Mismo molde
@@ -621,6 +664,11 @@ def _clasificar_fila_impl(
             # Mismo veto Cinta Adhesiva que aplica al modelo_pactivo
             if (normalizar(pact_m) == normalizar("Cinta Adhesiva Médica")
                     and VETO_CINTA_NO_MEDICA.search(descripcion or "")):
+                pact_m = None
+            # Aguja de insulina con glosa "aguja hipodérmica" — son cosas
+            # distintas (calibre/uso). Caso medido 06-04: 18 FP.
+            elif (normalizar(pact_m) == normalizar("Aguja de insulina")
+                  and VETO_AGUJA_HIPODERMICA_NO_INSULINA.search(descripcion or "")):
                 pact_m = None
             # Veto SUFIJO COMPUESTO: si el modelo predice un pactivo SIMPLE
             # (sin guión) pero la glosa indica compuesto (D, Plus, HCT, dosis
