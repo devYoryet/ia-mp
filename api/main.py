@@ -537,7 +537,12 @@ def _comparacion_listado(cell: str, metodo: str, pactivo_sug: str, limit: int,
 _TIPOS = {
     # interés = de interés Y con pactivo del catálogo. Los de pactivo NUEVO
     # tienen su propia categoría aparte (no se mezclan en "interés").
-    "interes": "interes_sugerido=1 AND (pactivo_nuevo IS NULL OR pactivo_nuevo='')",
+    # 'posible' (Etapa 2 — 2026-06-05): subconjunto de 'interés' cuya rama es
+    # 'modelo_marcas_posible' (confianza media 0.30-0.49). Aparece en amarillo
+    # y exige que el revisor complete pact+comp+pres antes de aprobar.
+    "interes": ("interes_sugerido=1 AND (pactivo_nuevo IS NULL OR pactivo_nuevo='') "
+                "AND metodo<>'modelo_marcas_posible'"),
+    "posible": "metodo='modelo_marcas_posible'",
     "descarte": "interes_sugerido=0",
     "nuevo": "pactivo_nuevo IS NOT NULL AND pactivo_nuevo<>''",
 }
@@ -1184,6 +1189,7 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
         f"<select name=tipo onchange='this.form.submit()'>"
         + opt("", "todos", tipo)
         + opt("interes", "interés", tipo)
+        + opt("posible", "posiblemente de interés", tipo)
         + opt("descarte", "descarte", tipo)
         + opt("nuevo", "pactivo nuevo", tipo)
         + "</select>"
@@ -1367,10 +1373,13 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
         interes = f.get("interes_sugerido")
         es_nuevo = bool((f.get("pactivo_nuevo") or "").strip())
         revisada = bool(f.get("revisado"))
+        es_posible = f.get("metodo") == "modelo_marcas_posible"
         if interes == 0:
             tipo_cls, badge = "t-descarte", "<span class='badge b-desc'>DESCARTE sugerido</span>"
         elif es_nuevo:
             tipo_cls, badge = "t-nuevo", "<span class='badge b-nuevo'>PACTIVO NUEVO</span>"
+        elif es_posible:
+            tipo_cls, badge = "t-posible", "<span class='badge b-posible'>POSIBLEMENTE de interés (REVISAR)</span>"
         else:
             tipo_cls, badge = "", "<span class='badge b-int'>INTERÉS sugerido</span>"
         # Badges técnicos (vía cascada + entrenamiento del modelo) SOLO para el
@@ -1496,6 +1505,15 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
                 "Si corresponde a un pactivo que ya existe, elígelo abajo y corrige; "
                 "si de verdad es nuevo, descártalo o anótalo en el motivo para que "
                 "se evalúe agregarlo al catálogo.</div>"
+            )
+        elif es_posible:
+            aviso_nuevo = (
+                f"<div class=nuevo-aviso style='background:#fff3a8;border-color:#c5a72b;"
+                f"color:#7a5f06'>🟡 POSIBLEMENTE de interés — el modelo de marcas "
+                f"sugiere <b>{_e(f.get('pactivo_sugerido') or '?')}</b> con "
+                f"confianza media ({conf:.2f}). Revisar contexto y completar "
+                f"pactivo + composición + presentación antes de aprobar; o "
+                f"descartar si no corresponde.</div>"
             )
 
         # Línea de edición — MISMOS name= en ambas vistas (el POST a /revisar-hoja

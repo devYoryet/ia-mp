@@ -48,11 +48,14 @@ tr + tr td { border-top: 1px solid #eef1f4; }
         box-shadow: 0 1px 3px rgba(0,0,0,.08); border-left: 4px solid #2f6fb0; }
 .fila.t-descarte { border-left-color: #c0392b; }
 .fila.t-nuevo { border-left-color: #d68910; background: #fffaf2; }
+.fila.t-posible { border-left-color: #c5a72b; background: #fffbe6; }
 /* Vista de APROBACIÓN (usuarios que aprueban, no admin): color de FONDO de TODO
-   el cuadro por estado, bien destacado. Verde=interés, rojo=descarte, naranja=nuevo. */
+   el cuadro por estado, bien destacado. Verde=interés, rojo=descarte, naranja=nuevo,
+   AMARILLO=posiblemente de interés (modelo de marcas con confianza media). */
 .fila-aprob { border: 2px solid #1b6b3a; border-left-width: 7px; background: #e6f5ec; }
 .fila-aprob.t-descarte { border-color: #c0392b; background: #fbe4e1; }
 .fila-aprob.t-nuevo { border-color: #d68910; background: #fdeccf; }
+.fila-aprob.t-posible { border-color: #c5a72b; background: #fff8d7; }
 .fila-aprob.skip { background: #eef0f3 !important; border-color: #95a5b8 !important; }
 .fila-aprob .desc-aprob { font-size: 17px; font-weight: 600; color: #1d2330;
         line-height: 1.35; margin: 6px 0 8px; }
@@ -136,6 +139,7 @@ tr + tr td { border-top: 1px solid #eef1f4; }
 .b-int { background: #d9f0e1; color: #1b6b3a; }
 .b-desc { background: #f8d7da; color: #9a2530; }
 .b-nuevo { background: #fde2c0; color: #9a6212; }
+.b-posible { background: #fff3a8; color: #7a5f06; border: 1px solid #c5a72b; }
 .b-hist { background: #d6e4f5; color: #1a4a7a; }
 .b-met { background: #e6e9ef; color: #3a4252; }
 .b-ent-d { background: #f3d6d6; color: #7a2530; border: 1px dashed #c98; }
