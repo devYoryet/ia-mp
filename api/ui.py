@@ -256,6 +256,7 @@ NAV = (
     ("Estadísticas", "/estadisticas"),
     ("Backtest", "/comparacion"),
     ("Cola de revisión", "/revision"),
+    ("Reportes", "/reportes"),
     ("Reglas", "/reglas"),
     ("Pactivos extra", "/pactivos-extra"),
     ("Legacy", "/legacy"),

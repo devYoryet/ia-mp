@@ -2521,6 +2521,62 @@ def pactivos_extra_desactivar(request: Request, id_: int):
     return RedirectResponse(f"/pactivos-extra?msg={msg}", status_code=303)
 
 
+@app.get("/reportes", response_class=HTMLResponse)
+def reportes(request: Request, dia: str = "") -> str:
+    """Lista de reportes diarios + reporte específico. Generados por
+    `reporte_diario.py` (cron 22:00 UTC / 18:00 Chile)."""
+    usuario = usuario_actual(request)
+    if not usuario:
+        return RedirectResponse("/login", status_code=303)
+    from pathlib import Path
+    rep_dir = Path("/app/reportes")
+    rep_dir.mkdir(parents=True, exist_ok=True)
+    listados = sorted([f.stem.replace("reporte_", "")
+                       for f in rep_dir.glob("reporte_*.md")], reverse=True)
+    if not listados:
+        cuerpo = ("<h1>Reportes diarios</h1>"
+                  "<p>Aún no hay reportes. Se generan cada día a las 18:00 Chile.</p>"
+                  "<p>Forzar generación manual: "
+                  "<code>docker exec ia-mp-worker-1 python /app/reporte_diario.py --dia YYYY-MM-DD</code></p>")
+        return _layout("Reportes", cuerpo, usuario=usuario)
+    if dia and (rep_dir / f"reporte_{dia}.md").exists():
+        contenido = (rep_dir / f"reporte_{dia}.md").read_text()
+        # Render simple de Markdown a HTML — limitado pero suficiente
+        import re as _re
+        html = _e(contenido)
+        # headers
+        html = _re.sub(r"^# (.+)$", r"<h1>\1</h1>", html, flags=_re.M)
+        html = _re.sub(r"^## (.+)$", r"<h2>\1</h2>", html, flags=_re.M)
+        # tablas: convertir | a HTML
+        out_lines = []
+        en_tabla = False
+        for ln in html.split("\n"):
+            if ln.startswith("| ") and "|" in ln[2:]:
+                cells = [c.strip() for c in ln.strip().strip("|").split("|")]
+                if all(_re.match(r"^-+:?$|^:?-+:?$", c) for c in cells):
+                    continue  # separador
+                tag = "th" if not en_tabla else "td"
+                if not en_tabla:
+                    out_lines.append("<table>")
+                    en_tabla = True
+                out_lines.append("<tr>" + "".join(f"<{tag}>{c}</{tag}>" for c in cells) + "</tr>")
+            else:
+                if en_tabla:
+                    out_lines.append("</table>")
+                    en_tabla = False
+                out_lines.append(ln)
+        if en_tabla: out_lines.append("</table>")
+        html = "\n".join(out_lines).replace("`", "")
+        nav = "  ·  ".join(
+            (f"<a href='/reportes?dia={d}'>{d}</a>" if d != dia else f"<b>{d}</b>")
+            for d in listados[:14])
+        cuerpo = f"<p>Días: {nav}</p><div class='reporte'>{html}</div>"
+    else:
+        items = "".join(f"<li><a href='/reportes?dia={d}'>{d}</a></li>" for d in listados[:30])
+        cuerpo = f"<h1>Reportes diarios</h1><ul>{items}</ul>"
+    return _layout("Reportes", cuerpo, usuario=usuario)
+
+
 @app.get("/salud")
 def salud():
     try:
