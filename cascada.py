@@ -27,6 +27,7 @@ from typing import Optional
 import clasificador_claude as cc
 import cruce_base
 import descarte_modelo
+import modelo_marcas as mm
 import modelo_pactivo as mp
 import preclasificador
 import reglas
@@ -251,6 +252,7 @@ def clasificar_fila(
     indice_inverso: "Optional[dict]" = None,
     modelo_pactivo=None,
     marcas_texto: str = "",
+    modelo_marcas=None,
 ) -> Resultado:
     """Clasifica y aplica el VALIDADOR FINAL de composición: cualquier rama de la
     cascada (cruce verbatim, regla, modelo, Claude libre) puede dejar una comp que
@@ -263,6 +265,7 @@ def clasificar_fila(
     r = _clasificar_fila_impl(
         tabla, fila, taxonomia, pactivos_norm, descartes, cruce, combinaciones,
         modelo_descarte, ejemplos, indice_inverso, modelo_pactivo, marcas_texto,
+        modelo_marcas,
     )
     # FINAL GUARD del PACTIVO: una rama puede haber dejado un pactivo que ya
     # NO está en el catálogo activo (cliente desactivado, decisión de negocio).
@@ -308,6 +311,7 @@ def _clasificar_fila_impl(
     indice_inverso: "Optional[dict]" = None,
     modelo_pactivo=None,
     marcas_texto: str = "",
+    modelo_marcas=None,
 ) -> Resultado:
     descripcion = fila.get("Descripcion")
     titulo = fila.get("Titulo")
@@ -571,6 +575,54 @@ def _clasificar_fila_impl(
             metodo="modelo_pactivo",
             razon=f"Clasificador de pactivo entrenado (probabilidad {conf:.2f}).",
         )
+
+    # Modelo de MARCAS por contexto (R2 Etapa 2 — 2026-06-05). Complementa al
+    # modelo_pactivo: entrenado SOLO con glosas donde el pactivo no aparece
+    # literal y se infiere de la marca + título + vínculos. Capa específica
+    # para marcas comerciales (Acerdil, Eutirox, Micardis, Cardioplus, etc.).
+    # Dos umbrales: alto → asignación normal verde; bajo → "posiblemente de
+    # interés" (amarillo) que el revisor debe completar antes de aprobar.
+    if modelo_marcas is not None:
+        pact_m, conf_m = mm.predecir(modelo_marcas, titulo or "", descripcion or "", vinculos or "")
+        if (pact_m
+                and normalizar(pact_m) not in {normalizar(p) for p in PACTIVOS_NO_MATCH_DIRECTO}
+                and normalizar(pact_m) in pactivos_norm):
+            # Mismo veto Cinta Adhesiva que aplica al modelo_pactivo
+            if (normalizar(pact_m) == normalizar("Cinta Adhesiva Médica")
+                    and VETO_CINTA_NO_MEDICA.search(descripcion or "")):
+                pact_m = None
+        if (pact_m
+                and normalizar(pact_m) not in {normalizar(p) for p in PACTIVOS_NO_MATCH_DIRECTO}
+                and normalizar(pact_m) in pactivos_norm):
+            if conf_m >= config.umbral_marcas_alto:
+                # Verde — asignación normal
+                comp_o, pres_o = preclasificador.elegir_comp_pres_por_descripcion(
+                    tabla, pact_m, descripcion
+                )
+                comp_h, pres_h = preclasificador.comp_pres_por_pactivo(tabla, pact_m)
+                return Resultado(
+                    interes=1,
+                    pactivo=pact_m,
+                    composicion=comp_o or comp_h,
+                    presentacion=pres_o or pres_h,
+                    confianza=round(conf_m, 3),
+                    metodo="modelo_marcas",
+                    razon=f"Clasificador de marcas/contexto (probabilidad {conf_m:.2f}).",
+                )
+            if conf_m >= config.umbral_marcas_bajo:
+                # Amarillo — "posiblemente de interés". El revisor debe
+                # completar pact+comp+pres (regla de oro lo obliga). El
+                # método '_posible' lo distingue en el filtro del panel.
+                return Resultado(
+                    interes=1,
+                    pactivo=pact_m,
+                    composicion=None,
+                    presentacion=None,
+                    confianza=round(conf_m, 3),
+                    metodo="modelo_marcas_posible",
+                    razon=(f"Sugerencia por contexto (probabilidad {conf_m:.2f}) — "
+                           f"REVISAR antes de aprobar."),
+                )
 
     # Claude — texto libre. Su salida se ajusta con snap al valor del catálogo.
     # Top-K pactivos cuyas palabras aparecen en la descripción → PISTA para

@@ -30,6 +30,7 @@ from cruce_base import cargar_cruce_base
 from db import conexion_worker, reintentar
 from descarte_items import cargar_descartes
 from descarte_modelo import cargar_modelo_descarte
+from modelo_marcas import cargar_modelo_marcas
 from modelo_pactivo import cargar_modelo_pactivo
 from ejemplos import cargar_ejemplos
 from marcas import cargar_marcas_para_prompt
@@ -66,6 +67,7 @@ def cargar_recursos() -> dict:
         "cruce": reintentar(cargar_cruce_base),
         "modelo_descarte": cargar_modelo_descarte(),
         "modelo_pactivo": cargar_modelo_pactivo(),
+        "modelo_marcas": cargar_modelo_marcas(),
         "contexto": contexto,
     }
     # Pista cacheable de marcas comerciales para el prompt de Claude (R2 2026-06-02):
@@ -109,6 +111,7 @@ def ciclo(r: dict) -> int:
                     indice_inverso=r["indice_inverso"],
                     modelo_pactivo=r["modelo_pactivo"],
                     marcas_texto=r.get("marcas_texto", ""),
+                    modelo_marcas=r.get("modelo_marcas"),
                 )
                 if es_test:
                     reintentar(lambda: escritor.registrar_backtest(tabla, fila, resultado))

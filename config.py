@@ -61,6 +61,20 @@ class Config:
     # sin re-entrenar. Re-calibrar este número cualquier vez que se cambie el
     # modelo o se observe drift en los bins de reliability.
     umbral_modelo_pactivo: float = float(os.getenv("UMBRAL_MODELO_PACTIVO", "0.30"))
+
+    # Modelo de marcas (clasificador por contexto título+glosa+vínculos).
+    # Dos umbrales:
+    # - alto:  asigna pactivo como interés normal (verde, aprobable directo)
+    # - bajo:  estado 'posiblemente de interés' (amarillo, requiere completar
+    #          pact/comp/pres por humano antes de aprobar)
+    # Si conf < bajo, la fila sigue a Claude.
+    # Valores conservadores iniciales — ajustar tras backtest del modelo.
+    # Calibrados con backtest 2026-06-05 sobre 3.5K filas / 751 pactivos:
+    # - umbral 0.50: cubre 45.3% del test con 98.45% acierto -> asignación verde
+    # - umbral 0.30: cubre 75.8% del test con 95.67% acierto -> banda 0.30-0.49
+    #                queda como "posiblemente de interés" (amarillo, revisar)
+    umbral_marcas_alto: float = float(os.getenv("UMBRAL_MARCAS_ALTO", "0.50"))
+    umbral_marcas_bajo: float = float(os.getenv("UMBRAL_MARCAS_BAJO", "0.30"))
     # Top-K pactivos del catálogo, ordenados por palabras de la descripción, que
     # se pasan a Claude como PISTA en el mensaje de usuario. No acota el
     # catálogo (sigue completo en el system prompt). 0 = desactivado.
