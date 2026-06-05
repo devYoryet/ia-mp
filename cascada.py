@@ -118,6 +118,24 @@ VETO_INSUMOS_PUNTUALES = re.compile(
     re.IGNORECASE,
 )
 
+# Sufijos que indican COMPUESTO (A-B o A-B-C) en vez del simple. Si modelo_marcas
+# predice un pactivo SIMPLE pero la glosa tiene uno de estos sufijos, no
+# confiamos en la predicción y dejamos caer a Claude (que con la regla 270 arma
+# el compuesto correcto). Caso medido 2026-06-05: 'Acerdil D' fue predicho como
+# Lisinopril porque el modelo aprendió Acerdil sin D (39 ejemplos simples) vs
+# Acerdil D (solo 10 ejemplos compuestos) — desbalance que distorsiona la marca.
+# Patrón general: cualquier sufijo D/Plus/HCT/Hzda o dosis dual X/Y indica un
+# compuesto del catálogo en lugar del principio activo simple.
+SUFIJO_COMPUESTO = re.compile(
+    r"(?:\s+D(?:\s|$|[.,])|"           # " D " o "X D" final o "X D,"
+    r"\s+Plus\b|"                       # "X Plus"
+    r"\bHCT\b|"                         # HCT (Hidroclorotiazida abreviado)
+    r"\bHzda?\b|\bHidroclorotiazida\b|" # Hzda / Hidroclorotiazida
+    r"\d+\s*/\s*\d+|"                   # dosis dual "10/12,5"
+    r"\d+\s*-\s*\d+\s*mg)",             # "10-12,5 mg"
+    re.IGNORECASE,
+)
+
 # 'Cinta Adhesiva Médica' es el pactivo que más sobre-asigna modelo_pactivo:
 # medido 7 FP/9 vía modelo_pactivo en 30d, y 20 FP/35 en 7d post-deploy.
 # El 80% del error del modelo viene de este único pactivo. Si el modelo lo
@@ -558,6 +576,13 @@ def _clasificar_fila_impl(
         if (normalizar(pact_pred) == normalizar("Cinta Adhesiva Médica")
                 and VETO_CINTA_NO_MEDICA.search(descripcion or "")):
             pact_pred = None
+        # Veto SUFIJO COMPUESTO: si el modelo predice un pactivo SIMPLE (sin
+        # guión) pero la glosa indica compuesto (D, Plus, HCT, dosis dual X/Y),
+        # no confiar — Claude con la regla 270 arma el compuesto. Mismo molde
+        # que en modelo_marcas. Caso medido 2026-06-05 con 'Acerdil D'.
+        elif (pact_pred and "-" not in pact_pred and "+" not in pact_pred
+              and SUFIJO_COMPUESTO.search(descripcion or "")):
+            pact_pred = None
     if (pact_pred and conf >= config.umbral_modelo_pactivo
             and normalizar(pact_pred) not in {normalizar(p) for p in PACTIVOS_NO_MATCH_DIRECTO}
             and normalizar(pact_pred) in pactivos_norm):
@@ -590,6 +615,12 @@ def _clasificar_fila_impl(
             # Mismo veto Cinta Adhesiva que aplica al modelo_pactivo
             if (normalizar(pact_m) == normalizar("Cinta Adhesiva Médica")
                     and VETO_CINTA_NO_MEDICA.search(descripcion or "")):
+                pact_m = None
+            # Veto SUFIJO COMPUESTO: si el modelo predice un pactivo SIMPLE
+            # (sin guión) pero la glosa indica compuesto (D, Plus, HCT, dosis
+            # dual X/Y), no confiar — Claude con la regla 270 arma el compuesto.
+            elif (pact_m and "-" not in pact_m and "+" not in pact_m
+                  and SUFIJO_COMPUESTO.search(descripcion or "")):
                 pact_m = None
         if (pact_m
                 and normalizar(pact_m) not in {normalizar(p) for p in PACTIVOS_NO_MATCH_DIRECTO}
