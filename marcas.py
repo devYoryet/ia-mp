@@ -85,28 +85,64 @@ _GENERICAS = frozenset({
 })
 
 
+def _pactivos_relevantes_recientes() -> set[str]:
+    """Pactivos NORMALIZADOS que Carolina viene usando en feedback (últimos 30d).
+    Lo usamos como criterio de relevancia para achicar el bloque de marcas:
+    sólo incluir marcas cuyo pactivo Carolina USA hoy, no fósiles del histórico.
+    Ver [[leccion-catalogo-historico-vs-vigente]]."""
+    try:
+        conn = conexion_worker()
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT DISTINCT feedback_pactivo p "
+                "FROM clasificador_ia_log "
+                "WHERE feedback_pactivo IS NOT NULL AND feedback_pactivo <> '' "
+                "AND revisado = 1 "
+                "AND revisado_en >= NOW() - INTERVAL 30 DAY"
+            )
+            return {normalizar(r["p"]) for r in cur.fetchall() if r["p"]}
+    except Exception as exc:  # noqa: BLE001
+        log.warning("No se pudo cargar feedback_pactivo reciente (%s)", exc)
+        return set()
+
+
 def cargar_marcas_para_prompt(
     pactivos_activos_norm: "set[str] | dict[str, str]",
-    max_marcas: int = 1500,
+    max_marcas: int = 200,
 ) -> str:
     """Bloque de texto que se inyecta como PISTA cacheable en el system prompt
-    de Claude. Marca → pactivo INEQUÍVOCA cuyo pactivo está en catálogo activo.
+    de Claude. Marca → pactivo INEQUÍVOCA cuyo pactivo está en catálogo activo
+    Y que Carolina USA recientemente (feedback últimos 30d).
+
+    Achicado 2026-06-05 de 1500 a 200 marcas: el bloque pesaba 44.5K chars
+    (~11K tokens). Cada cache_write costaba 130K tokens. Costo medido +$0.0022/
+    llamada = +$130/mes. Top 200 por relevancia reciente cubre los compuestos
+    importantes (Acerdil D, Cardioplus Am, Brevex, Bramedil, Micardis Plus)
+    manteniendo ~12% del tamaño anterior.
 
     Cuidado (ver [[fallos-y-lecciones]]): NO es mapeo determinista — el mapeo
-    determinista palabra2→pactivo en cascada falló con 38% acierto en mayo. Acá
-    Claude decide; las marcas son contexto cacheable (cero costo por fila gracias
-    a prompt caching). Filtros: marca >= 5 chars, pactivo en catálogo activo,
-    marca distinta de un sustantivo genérico (_GENERICAS) y distinta de cualquier
-    pactivo activo (para no llamar "marca" a un genérico)."""
+    determinista palabra2→pactivo en cascada falló con 38% acierto. Acá Claude
+    decide; las marcas son contexto cacheable. Filtros: marca >= 5 chars,
+    pactivo en catálogo activo Y reciente, marca distinta de sustantivo
+    genérico (_GENERICAS) y distinta de cualquier pactivo activo."""
     activos_set = pactivos_activos_norm if isinstance(pactivos_activos_norm, set) \
         else set(pactivos_activos_norm.keys())
+    relevantes_recientes = _pactivos_relevantes_recientes()
+    # Si no podemos cargar el reciente, no filtramos por relevancia (fallback)
+    if not relevantes_recientes:
+        relevantes_recientes = activos_set
+
     conn = conexion_worker()
     candidatos: "dict[str, set[str]]" = defaultdict(set)
     with conn.cursor() as cur:
         cur.execute(_SQL.format(db=config.db_diccionario))
         for r in cur.fetchall():
             pact = (r["pactivo"] or "").strip()
-            if not pact or normalizar(pact) not in activos_set:
+            pact_n = normalizar(pact)
+            if not pact or pact_n not in activos_set:
+                continue
+            # solo pactivos que Carolina usa hoy (filtro de relevancia)
+            if pact_n not in relevantes_recientes:
                 continue
             for tok in (r.get("palabra2") or "").split(","):
                 marca = tok.strip()
@@ -126,15 +162,16 @@ def cargar_marcas_para_prompt(
     if truncado:
         pares = pares[:max_marcas]
     cuerpo = "\n".join(f"- {marca} → {pact}" for marca, pact in pares)
-    log.info("Marcas prompt: %d marcas inequívocas%s",
-             len(pares), " (truncado)" if truncado else "")
+    log.info("Marcas prompt: %d marcas inequívocas%s (de %d candidatos, "
+             "filtradas por relevancia reciente)",
+             len(pares), " (truncado)" if truncado else "", len(mapa))
     return (
-        "MARCAS COMERCIALES CONOCIDAS — PISTA del diccionario interno (no es "
-        "veredicto; Claude decide según contexto):\n"
-        "Si la glosa contiene una de estas marcas como palabra completa y el "
-        "contexto encaja con el pactivo indicado, preferir ese pactivo. "
-        "Si la glosa indica una variante compuesta (marca seguida de 'D', "
-        "'Plus', 'HCT', 'Hzda', '/12,5', etc.), considerar el pactivo COMPUESTO "
-        "correspondiente en el catálogo activo en vez del simple.\n\n"
+        "MARCAS COMERCIALES CONOCIDAS — PISTA del diccionario interno "
+        "(no es veredicto; Claude decide según contexto). Selección: marcas "
+        "inequívocas cuyo pactivo está en uso por Carolina los últimos 30d. "
+        "Si la glosa contiene una de estas marcas como palabra completa, "
+        "preferir el pactivo indicado. Si la glosa indica una variante "
+        "compuesta (marca + 'D'/'Plus'/'HCT'/'Hzda'/'/12,5'), considerar el "
+        "pactivo COMPUESTO correspondiente del catálogo en vez del simple.\n\n"
         f"{cuerpo}\n"
     )

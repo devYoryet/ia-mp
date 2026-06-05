@@ -39,6 +39,84 @@ from taxonomia import Taxonomia
 # discos de antibiograma. Descarte duro por palabra clave (ver veto en la cascada).
 VETO_SENSIDISCOS = re.compile(r"sensi\s*disco|senci\s*disco", re.IGNORECASE)
 
+# VETOS DUROS por glosa — descartan ANTES de cualquier rama (igual molde que
+# sensidiscos). Migran reglas largas del prompt (regla 385 consolidada) al
+# código, sin costo extra en el prompt cacheable. Cada uno cubre un producto
+# que en Pharmatender NO se clasifica nunca. Consolidados 2026-06-05.
+
+# STENT (cualquier tipo: coronario, biliar, carotídeo, intracraneal) y TIRAS
+# epsilométricas (=antibiograma en tira). Caso medido 2026-06-04: 83 FP/48h
+# de 'Everolimus' por matchear el medicado del stent. NO confundir con TIRAS
+# REACTIVAS de glucosa (esas tienen 'reactiv' + 'glucosa' y son válidas).
+VETO_STENT_Y_TIRAS = re.compile(
+    r"\b(?:stent|tira\s+epsilom[eé]tric|epsilometr[ií]a)\b",
+    re.IGNORECASE,
+)
+
+# DETERMINACIONES MOLECULARES + MGIT (tubes o cualquier sufijo) + kits
+# diagnósticos de microbiología. Insumos de lab clínico, no farma.
+# 'mgit' standalone porque las glosas vienen 'MGIT Tbc Identification Test',
+# 'MGIT 960', etc. — el sufijo varía.
+VETO_LAB_NO_FARMA = re.compile(
+    r"\b(?:determinaciones\s+moleculares|mgit|"
+    r"kit\s+(?:de\s+)?diagn[oó]stico|kit\s+diagn[oó]stico|"
+    r"reactivo\s+(?:de\s+)?microbiolog|cultivo\s+(?:para|de)\s+tbc)\b",
+    re.IGNORECASE,
+)
+
+# OSTOMÍA: las glosas vienen en varios formatos ('bolsa drenable PARA colostomia',
+# 'bolsa abierta colostomia', 'set ostomia'). Más fiable matchear el sustantivo
+# colostom/ileostom/urostom directamente (con cualquier sufijo).
+VETO_OSTOMIA = re.compile(
+    r"\b(?:colostom\w*|ileostom\w*|urostom\w*|"
+    r"bolsa\s+drenable\s+(?:de\s+)?ostom|set\s+(?:de\s+)?ostom)",
+    re.IGNORECASE,
+)
+
+# TRAQUETUBO / tubo endotraqueal / cánula traqueal. Caso medido 2026-06-04:
+# 6 falsos Adjunto por glosas "Traquetubo X.0, instrumental quirúrgico,
+# Dispositivos médicos estériles, según especificaciones anex" — Claude
+# tomó "según especificaciones anex" como Adjunto pero es instrumental.
+VETO_TRAQUETUBO = re.compile(
+    r"\b(?:traquetubo|tubo\s+(?:traqueal|endotraqueal)|c[aá]nula\s+traqueal|"
+    r"c[aá]nula\s+endotraqueal)\b",
+    re.IGNORECASE,
+)
+
+# AGUA OXIGENADA / peróxido de hidrógeno (cualquier concentración).
+VETO_AGUA_OXIGENADA = re.compile(
+    r"\b(?:agua\s+oxigenada|per[oó]xido\s+de\s+hidr[oó]geno|h2o2)\b",
+    re.IGNORECASE,
+)
+
+# TEST DE SCHIRMER (oftalmología — test de lágrima).
+VETO_TEST_SCHIRMER = re.compile(
+    r"\btest\s+(?:de\s+)?schirmer\b",
+    re.IGNORECASE,
+)
+
+# JABÓN LÍQUIDO en cualquier presentación. EXCEPCIÓN: 'jabón alcohol' o
+# 'alcohol gel jabón' SÍ se clasifica (= Alcohol Gel). Por eso el veto solo
+# aplica cuando la glosa tiene "jabón líquido"/"jabón de manos"/"jabón
+# institucional" y NO menciona "alcohol gel".
+VETO_JABON_NO_FARMA = re.compile(
+    r"\b(?:jab[oó]n\s+(?:l[ií]quido|de\s+manos|institucional|de\s+glicerina|"
+    r"perfumado|para\s+manos|para\s+ba[nñ]o|antibact|antis[eé]ptic|"
+    r"neutro|para\s+ducha|infantil|kemikal))\b",
+    re.IGNORECASE,
+)
+# Excepción al jabón: si la glosa también menciona "alcohol gel" o
+# "alcohol en gel", ese sí se clasifica como Alcohol Gel.
+_JABON_EXCEPCION = re.compile(r"alcohol\s+(?:en\s+)?gel", re.IGNORECASE)
+
+# INSUMOS QUIRÚRGICOS NO FARMA puntuales: stent + set de irrigación + azul
+# tripán + Endosolv + agente disolvente endodóntico.
+VETO_INSUMOS_PUNTUALES = re.compile(
+    r"\b(?:set\s+(?:de\s+)?irrigaci[oó]n|azul\s+trip[aá]n|endosolv|"
+    r"agente\s+disolvente\s+endod[oó]nt)\b",
+    re.IGNORECASE,
+)
+
 # 'Cinta Adhesiva Médica' es el pactivo que más sobre-asigna modelo_pactivo:
 # medido 7 FP/9 vía modelo_pactivo en 30d, y 20 FP/35 en 7d post-deploy.
 # El 80% del error del modelo viene de este único pactivo. Si el modelo lo
@@ -236,22 +314,43 @@ def _clasificar_fila_impl(
     vinculos = fila.get("VINCULOS")
     texto = f"{titulo or ''} {descripcion or ''}".strip()
 
-    # Veto SENSIDISCOS — discos de susceptibilidad antibiótica (antibiograma), un
-    # insumo de microbiología, NO un fármaco que Pharmatender provea. La glosa
-    # menciona el antibiótico (Cefadroxilo, Piperacilina, etc.), así que tanto el
-    # cruce como regla_diccionario lo marcarían como interés ANTES de llegar a
-    # Claude — por eso el veto va primero, como descarte duro por palabra clave.
-    # (Antes era una regla del prompt de Claude (id=7), inútil: la cascada
-    # resolvía por el antibiótico antes de consultar a Claude. Medido 2026-05-29.)
-    if VETO_SENSIDISCOS.search(descripcion or ""):
+    # Vetos duros por glosa — descartan ANTES de cualquier rama porque las
+    # ramas baratas (cruce_base, regla_diccionario) matchearían el medicamento
+    # o componente que viene EN el insumo y darían int=1 incorrecto. Migrados
+    # 2026-06-05 desde regla 385 del prompt a código (cero costo extra y siempre
+    # se aplican). Ver [[huecos-estructurales]] para el principio.
+    desc_o = descripcion or ""
+    _vetos = [
+        (VETO_SENSIDISCOS, "veto_sensidiscos",
+         "Sensidiscos (discos de antibiograma) — microbiología, no fármaco."),
+        (VETO_STENT_Y_TIRAS, "veto_stent_tiras",
+         "Stent o tira epsilométrica — insumo quirúrgico/lab, no fármaco."),
+        (VETO_LAB_NO_FARMA, "veto_lab_no_farma",
+         "Determinaciones moleculares / MGIT / kit diagnóstico — lab, no fármaco."),
+        (VETO_OSTOMIA, "veto_ostomia",
+         "Bolsa de ostomía — insumo de ostomía, no fármaco."),
+        (VETO_TRAQUETUBO, "veto_traquetubo",
+         "Traquetubo / tubo endotraqueal / cánula traqueal — instrumental."),
+        (VETO_AGUA_OXIGENADA, "veto_agua_oxigenada",
+         "Agua oxigenada / peróxido de hidrógeno — no se clasifica."),
+        (VETO_TEST_SCHIRMER, "veto_test_schirmer",
+         "Test de Schirmer — test oftalmológico, no fármaco."),
+        (VETO_INSUMOS_PUNTUALES, "veto_insumos_puntuales",
+         "Insumo quirúrgico/endodóntico puntual — no fármaco."),
+    ]
+    for regex, met, razon in _vetos:
+        if regex.search(desc_o):
+            return Resultado(
+                interes=0, pactivo=None, composicion=None, presentacion=None,
+                confianza=0.97, metodo=met, razon=razon,
+            )
+    # Jabón líquido: veto con EXCEPCIÓN. Si la glosa dice "jabón líquido" pero
+    # también "alcohol gel", NO vetar (es jabón-alcohol = Alcohol Gel, válido).
+    if VETO_JABON_NO_FARMA.search(desc_o) and not _JABON_EXCEPCION.search(desc_o):
         return Resultado(
-            interes=0,
-            pactivo=None,
-            composicion=None,
-            presentacion=None,
-            confianza=0.97,
-            metodo="veto_sensidiscos",
-            razon="Sensidiscos (discos de antibiograma) — insumo de microbiología, no fármaco.",
+            interes=0, pactivo=None, composicion=None, presentacion=None,
+            confianza=0.97, metodo="veto_jabon_no_farma",
+            razon="Jabón líquido / institucional / manos — no se clasifica.",
         )
 
     # Cruce Base — descripción idéntica a una OC REAL del catálogo 0001_td_oc.Base.
