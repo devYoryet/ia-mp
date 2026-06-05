@@ -119,20 +119,26 @@ VETO_INSUMOS_PUNTUALES = re.compile(
 )
 
 # Sufijos que indican COMPUESTO (A-B o A-B-C) en vez del simple. Si modelo_marcas
-# predice un pactivo SIMPLE pero la glosa tiene uno de estos sufijos, no
-# confiamos en la predicción y dejamos caer a Claude (que con la regla 270 arma
-# el compuesto correcto). Caso medido 2026-06-05: 'Acerdil D' fue predicho como
-# Lisinopril porque el modelo aprendió Acerdil sin D (39 ejemplos simples) vs
-# Acerdil D (solo 10 ejemplos compuestos) — desbalance que distorsiona la marca.
-# Patrón general: cualquier sufijo D/Plus/HCT/Hzda o dosis dual X/Y indica un
-# compuesto del catálogo en lugar del principio activo simple.
+# o modelo_pactivo predice un pactivo SIMPLE pero la glosa tiene uno de estos
+# sufijos, no confiamos en la predicción y dejamos caer a Claude (que con la
+# regla 270 arma el compuesto correcto). Caso medido 2026-06-05: 'Acerdil D'
+# fue predicho como Lisinopril porque el histórico humano tiene 39 'Acerdil'
+# simple vs solo 10 'Acerdil D' (desbalance que distorsiona la marca).
+#
+# IMPORTANTE: estos son DETECTORES en la glosa, no el nombre del pactivo final.
+# El pactivo final que devuelve Claude SIEMPRE es el nombre del catálogo
+# ('Lisinopril-Hidroclorotiazida'), NUNCA la abreviación ('Lisinopril-HCT').
+# Confirmado con el usuario 2026-06-05.
 SUFIJO_COMPUESTO = re.compile(
-    r"(?:\s+D(?:\s|$|[.,])|"           # " D " o "X D" final o "X D,"
-    r"\s+Plus\b|"                       # "X Plus"
-    r"\bHCT\b|"                         # HCT (Hidroclorotiazida abreviado)
-    r"\bHzda?\b|\bHidroclorotiazida\b|" # Hzda / Hidroclorotiazida
-    r"\d+\s*/\s*\d+|"                   # dosis dual "10/12,5"
-    r"\d+\s*-\s*\d+\s*mg)",             # "10-12,5 mg"
+    r"(?:\s+D(?:\s|$|[.,])|"               # " D " o "X D" final o "X D,"
+    r"\s+Plus\b|"                          # "X Plus"
+    r"\bHCT\b|"                            # HCT (abrev. Hidroclorotiazida)
+    r"\bHzda?\b|\bHidroclorotiazida\b|"    # Hzda / Hidroclorotiazida
+    r"\bcompuest[oa]s?\b|"                 # 'compuesto', 'compuesta', 'compuestos'
+    r"\bcpto\b|\bcompto\b|\bcpta\b|"       # abreviaciones: cpto, compto, cpta
+    r"\bc/[a-z]|"                          # 'C/Hidroclorotiazida' tipo combinado
+    r"\d+\s*/\s*\d+|"                      # dosis dual "10/12,5"
+    r"\d+\s*-\s*\d+\s*mg)",                # "10-12,5 mg"
     re.IGNORECASE,
 )
 
