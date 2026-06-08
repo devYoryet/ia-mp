@@ -45,12 +45,15 @@ MODO_INICIO = "mantenimiento"
 DIRECTORIO_ACTUAL = os.path.dirname(os.path.abspath(__file__))
 
 def get_engine_by_server(nombre_bd, servidor_objetivo):
-    v = VaultLinuxManager()
-    creds = v.get_linux_mysql_connection(database=nombre_bd, server=servidor_objetivo, return_dict=True)
-    usuario = creds['user']
-    password = quote_plus(creds['password'])
-    host = creds['host']
-    conn_str = "mysql+mysqlconnector://{0}:{1}@{2}/{3}".format(usuario, password, host, nombre_bd)
+    # Credenciales directas por servidor (mismo enfoque que base_para_sql.py /
+    # cenabast_para_sql.py). El vault del host no esta en el contenedor; la red
+    # interna alcanza clasico (.69) y prime (.68) directo.
+    if servidor_objetivo == "clasico":
+        usuario, password, hostport = "root", "@_Clasic0Root2025DB_M8qP3nP12", "10.0.0.69:3306"
+    else:  # prime
+        usuario, password, hostport = "root", "@_SecureRoot2025DB_M8qP3nX7", "10.0.0.68:8806"
+    conn_str = "mysql+pymysql://{0}:{1}@{2}/{3}?charset=utf8mb4".format(
+        usuario, quote_plus(password), hostport, nombre_bd)
     return create_engine(conn_str, pool_recycle=3600)
 
 engine = get_engine_by_server("analisis_precios", "prime")
@@ -499,7 +502,9 @@ def verificar_integridad_total(df_excel_original, columnas_sql, engine, ids_fall
             ]
         })
 
-        base_path = os.path.abspath(os.path.join(DIRECTORIO_ACTUAL, "..", "storage", "app", "temp"))
+        # El reporte debe quedar en el volumen montado que el panel sirve para
+        # "Descargar reporte" (LEGACY_TEMP_DIR, default /host/storage/temp).
+        base_path = os.getenv("LEGACY_TEMP_DIR", "/host/storage/temp")
         fecha_actual = datetime.now().strftime("%Y-%m-%d_%H-%M")
         nombre_archivo = f"reporte_{fecha_actual}.xlsx"
         ruta_reporte = os.path.join(base_path, nombre_archivo)
