@@ -138,7 +138,15 @@ SUFIJO_COMPUESTO = re.compile(
     r"\bcpto\b|\bcompto\b|\bcpta\b|"       # abreviaciones: cpto, compto, cpta
     r"\bc/[a-z]|"                          # 'C/Hidroclorotiazida' tipo combinado
     r"\d+\s*/\s*\d+|"                      # dosis dual "10/12,5"
-    r"\d+\s*-\s*\d+\s*mg)",                # "10-12,5 mg"
+    r"\d+\s*-\s*\d+\s*mg|"                 # "10-12,5 mg"
+    # 2026-06-08: dosis seguida de "/" + PALABRA (segundo principio activo)
+    # Casos: "10 MG/ METFORMINA", "5G/ LIDOCAINA", "0,1/2,5%"
+    r"\d+\s*(?:mg|g|mcg|ui|%)\s*/\s*[a-zA-Z]|"
+    # Múltiples componentes separados por ";" con dosis: "AMLO 10 MG; VALS 160 MG; HCT 12,5 MG"
+    r"\d+\s*(?:mg|g|mcg|ui|%)\s*;\s*\w+\s+\d|"
+    # peroxido de benzoilo en glosa de Adapaleno
+    r"\bper[oó]xido\s+de\s+benzoilo\b|"
+    r"\+\s*\w+\s*\d+\s*(?:%|mg|g))",
     re.IGNORECASE,
 )
 
@@ -206,6 +214,7 @@ VETO_NO_FARMA_PUNTUALES_2 = re.compile(
 # desoxidante, adhesivo, base de silicona, alimenticio, lubriclav, autoclave, NSF.
 VETO_LUBRICANTE_NO_INTIMO = re.compile(
     r"\b(?:turbina|contra\s*[aá]ngulo|instrumental|"
+    r"quir[uú]rgic\w*|"  # 2026-06-08: "LUBRICANTE INSTRUMENTOS QUIRÚRGICOS" (plural/género)
     r"sint[eé]tico|silicona\s*lubricante|aceite|"
     r"dw-?40|anticorrosivo|ferreter[ií]a|industrial|"
     r"motor|m[áa]quina|maquinaria|mec[áa]nic[oa]|"
@@ -215,6 +224,29 @@ VETO_LUBRICANTE_NO_INTIMO = re.compile(
     r"adhesivo|base\s+de\s+silicona|alimenticio|lubriclav|"
     r"autoclave|nsf|equipo|mantenimiento|"
     r"oxida(?:nte|cion|ción)|antioxidante|antifriccion|antifricción)\b",
+    re.IGNORECASE,
+)
+
+# Veto de cosméticos NO farma (espuma de afeitar, bálsamo post-afeitado, etc.)
+# Caso medido 2026-06-08: "ESPUMA DE AFEITAR SENSITIVE" → Espuma (FP).
+# "BÁLSAMO POST-AFEITADO" → Glicerina (FP). "Alcohol de Quemar uso dental" →
+# Alcohol Gel (FP). NO son productos farma vendibles.
+VETO_COSMETICO_NO_FARMA = re.compile(
+    r"\b(?:espuma\s+(?:de\s+)?afeitar|b[aá]lsamo\s+(?:post[\s-]*)?afeitad\w*|"
+    r"after[\s-]*shave|alcohol\s+(?:de\s+)?quemar|"
+    r"crema\s+de\s+afeitar|gel\s+(?:de\s+)?afeitar|"
+    r"jab[oó]n\s+de\s+afeitar|loci[oó]n\s+after\s*shave)",
+    re.IGNORECASE,
+)
+
+# Sensor de glucosa CONTINUO (Freestyle Libre, Dexcom, MiniMed) NO es el
+# pactivo "Glucosa" — es DISPOSITIVO médico. Caso medido 2026-06-08:
+# "DISPOSITIVO QUE MIDE LA GLUCOSA DE FORMA CONTINUA" → Glucosa (FP).
+VETO_GLUCOSA_SENSOR = re.compile(
+    r"\b(?:sensor\s+(?:de\s+)?glucosa|glucosa\s+(?:de\s+forma\s+)?continua|"
+    r"medidor\s+de\s+glucosa|freestyle\s+libre|dexcom|minimed|"
+    r"dispositivo\s+(?:que\s+mide|para\s+medir)\s+(?:la\s+)?glucosa|"
+    r"monitoreo\s+continuo\s+de\s+glucosa|cgm\b)",
     re.IGNORECASE,
 )
 
@@ -403,6 +435,10 @@ def _clasificar_fila_impl(
          "Reactivo de laboratorio (EDTA / tioglicolato / formol) — no fármaco."),
         (VETO_NO_FARMA_PUNTUALES_2, "veto_no_farma_2",
          "Insumo no farma (campo quirúrgico / microbrush / dental) — no fármaco."),
+        (VETO_COSMETICO_NO_FARMA, "veto_cosmetico_no_farma",
+         "Cosmético (espuma de afeitar / bálsamo post / alcohol de quemar) — no fármaco."),
+        (VETO_GLUCOSA_SENSOR, "veto_glucosa_sensor",
+         "Sensor / dispositivo de glucosa continua (Freestyle/Dexcom) — no es el pactivo Glucosa."),
     ]
     for regex, met, razon in _vetos:
         if regex.search(desc_o):
@@ -433,15 +469,26 @@ def _clasificar_fila_impl(
         # catálogo activo, descartamos el hit y la cascada sigue a las siguientes
         # ramas. Igual molde que en la rama 'historico'.
         if pactivo_b and normalizar(pactivo_b) in pactivos_norm:
-            return Resultado(
-                interes=1,
-                pactivo=pactivo_b,
-                composicion=comp_b,
-                presentacion=pres_b,
-                confianza=0.95,
-                metodo="cruce_base",
-                razon="Descripción idéntica a una OC real del catálogo Base.",
-            )
+            # VETO SUFIJO COMPUESTO en cruce_base — caso medido 2026-06-08:
+            # "AMLODIPINO 10 MG; VALSARTAN 160 MG; HIDROCLOROTIAZIDA 12,5 MG"
+            # matcheaba verbatim una OC histórica con pact='Valsartan-Amlodipino'
+            # (doble) pero la glosa indica TRIPLE (HCT presente). Si el pact del
+            # cruce es simple o doble pero la glosa tiene sufijo compuesto extra,
+            # ignorar el cruce y dejar caer a otras ramas. Mismo molde que en los
+            # modelos: el guion en el pactivo cuenta los componentes.
+            n_componentes_pact = pactivo_b.count("-") + pactivo_b.count("+") + 1
+            if n_componentes_pact < 3 and SUFIJO_COMPUESTO.search(descripcion or ""):
+                pass  # ignora el hit, cae a las siguientes ramas
+            else:
+                return Resultado(
+                    interes=1,
+                    pactivo=pactivo_b,
+                    composicion=comp_b,
+                    presentacion=pres_b,
+                    confianza=0.95,
+                    metodo="cruce_base",
+                    razon="Descripción idéntica a una OC real del catálogo Base.",
+                )
 
     # Descarte por rubro — Item (compra_agil) / Cod_Onu (Licitaciones_diarias):
     # rubro que el histórico humano descartó SIEMPRE (>= N vistas, 0 de interés).
@@ -536,6 +583,18 @@ def _clasificar_fila_impl(
         elif pact_n == normalizar("Lubricante") and VETO_LUBRICANTE_NO_INTIMO.search(desc_lower):
             pactivo = None
         elif pact_n in ANTIBIOTICOS and VETO_ANTIBIOT_NO_MEDICA.search(desc_lower):
+            pactivo = None
+        # VETO SUFIJO COMPUESTO en regla_diccionario — caso medido 2026-06-08:
+        # "EMPAGLIFOZINA 10 MG/ METFORMINA 1000 MG" matcheaba SIMPLE "Metformina"
+        # (porque match_combinacion fallaba con el typo 'Empaglifozina'). Si el
+        # match es SIMPLE (no combinado) y la glosa tiene sufijos/dosis duales
+        # típicos de compuesto, no confiar — dejar caer a Claude que con regla
+        # 270 arma el compuesto. Idem caso "Adapaleno + peróxido benzoilo",
+        # "TIBENOSIDO/LIDOCAINA". Solo aplica si match es SIMPLE — los
+        # combinados ya son compuestos.
+        elif (pactivo and not por_combinacion
+              and "-" not in pactivo and "+" not in pactivo
+              and SUFIJO_COMPUESTO.search(desc_lower)):
             pactivo = None
     if pactivo:
         # VETO del modelo entrenado sobre el match SIMPLE de diccionario.
@@ -666,9 +725,21 @@ def _clasificar_fila_impl(
                     and VETO_CINTA_NO_MEDICA.search(descripcion or "")):
                 pact_m = None
             # Aguja de insulina con glosa "aguja hipodérmica" — son cosas
-            # distintas (calibre/uso). Caso medido 06-04: 18 FP.
+            # distintas (calibre/uso). Caso medido 06-04: 18 FP. Ampliado
+            # 2026-06-08: "AGUJA GRIPPER" + "AGUJA 23GX1 1/4 DESCH" tampoco
+            # son aguja de insulina.
             elif (normalizar(pact_m) == normalizar("Aguja de insulina")
-                  and VETO_AGUJA_HIPODERMICA_NO_INSULINA.search(descripcion or "")):
+                  and (VETO_AGUJA_HIPODERMICA_NO_INSULINA.search(descripcion or "")
+                       or re.search(r"\b(?:gripper|desech|hipoderm)\b",
+                                    descripcion or "", re.IGNORECASE))):
+                pact_m = None
+            # 'Alargador Venoso' o 'Alargador Arterial' con glosa de CATETER —
+            # son catéteres, no alargadores. Caso medido 2026-06-08: 5 FP
+            # "CATETER UMBILICAL VENOSO" → Alargador Venoso (modelo_marcas).
+            # Catéter NO se clasifica en Pharmatender (regla 637).
+            elif (normalizar(pact_m) in (normalizar("Alargador Venoso"),
+                                          normalizar("Alargador Arterial"))
+                  and re.search(r"\bcat[eé]ter\b", descripcion or "", re.IGNORECASE)):
                 pact_m = None
             # Veto SUFIJO COMPUESTO: si el modelo predice un pactivo SIMPLE
             # (sin guión) pero la glosa indica compuesto (D, Plus, HCT, dosis
