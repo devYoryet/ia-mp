@@ -2443,8 +2443,12 @@ def reglas(request: Request, msg: str = "") -> str:
                    display: block; word-break: break-all; font-size: 11px;
                    color: #4a4a4a; margin-top: 4px; }
 .btn-mini { background: #fff; border: 1px solid #cdd5e0; border-radius: 5px;
-            padding: 4px 10px; font-size: 12px; cursor: pointer; }
-.btn-mini:hover { background: #f3f6fa; }
+            padding: 4px 12px; font-size: 12px; cursor: pointer;
+            color: #2a3142; font-weight: 600; line-height: 1.2;
+            font-family: inherit; }
+.btn-mini:hover { background: #f3f6fa; border-color: #2f6fb0; color: #2f6fb0; }
+.veto-card.veto-off .btn-mini { color: #1b6b3a; border-color: #1b6b3a; }
+.veto-card.veto-off .btn-mini:hover { background: #e6f5ec; }
 
 .seccion-titulo { display: flex; align-items: baseline; gap: 12px;
                   margin: 28px 0 8px; padding-bottom: 6px;
