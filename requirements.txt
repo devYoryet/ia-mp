@@ -12,7 +12,11 @@ bcrypt>=4.1.0
 # Cookies de sesión firmadas para el login del panel.
 itsdangerous>=2.2.0
 # Clasificador de descarte (entrenado con el histórico etiquetado).
-scikit-learn>=1.5.0
+# PIN EXACTO: los modelos .joblib se entrenaron con sklearn 1.8.0. La 1.9.0
+# reorganizó módulos internos (sklearn._loss) y rompe el unpickle con
+# "ModuleNotFoundError: No module named '_loss'" al cargar modelo_pactivo.
+# NO subir de 1.8.x sin re-entrenar y re-serializar los modelos.
+scikit-learn==1.8.0
 joblib>=1.4.0
 # Scripts legacy portados de gestor_oc (bin/*.py): leen Excel/CSV y escriben a
 # Clásico/Prime con pandas+sqlalchemy. vault_linux_helper usa mysql-connector.
