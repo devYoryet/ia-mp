@@ -106,6 +106,10 @@ def _args_item_detalle(path: Path, nombre: str) -> list[str]:
     return ["--excel", str(path), "--tabla", tabla, "--server", "clasico"]
 
 
+def _args_cenabast(path: Path, nombre: str) -> list[str]:
+    return [str(path)]
+
+
 MODULOS: dict[str, Modulo] = {
     "subida-td": Modulo(
         slug="subida-td",
@@ -151,6 +155,17 @@ MODULOS: dict[str, Modulo] = {
         args=_args_item_detalle,
         finalizadores=("TERMINADA CON EXITO", "ERROR CRÍTICO", "FIN"),
         emoji="📄",
+    ),
+    "cenabast": Modulo(
+        slug="cenabast",
+        titulo="Subida Cenabast",
+        descripcion="Carga del Excel de Cenabast en base (Clásico y Prime) y registra el último mes en Fecha.",
+        script="cenabast_para_sql.py",
+        log="cenabast.log",
+        accept=".xlsx,.xls",
+        args=_args_cenabast,
+        finalizadores=("FINALIZADO EXITOSAMENTE", "ERROR CRÍTICO"),
+        emoji="🏥",
     ),
 }
 
