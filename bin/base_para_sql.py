@@ -267,44 +267,77 @@ def sincronizacion_tabla_pk(engine):
             conn.execute(text("COMMIT"))
             print(f"Tabla {TABLA_PK} reconstruida")
 
-            print("Sincronizando con fecha_ranking...")
-
-            res_periodos = conn.execute(text(f"""
-                SELECT DISTINCT
-                    DATE_FORMAT (Fecha, '%Y-%m') as f_id,
-                    MONTH(Fecha) as n_num,
-                    YEAR(Fecha) as a_val
-                FROM `{TABLA_PK}`
-                WHERE Fecha IS NOT NULL                                  
-            """)).fetchall()
-
-            meses_es = {
-                1:"Enero", 2:"Febrero", 3:"Marzo", 4: "Abril", 
-                5: "Mayo", 6: "Junio", 7: "Julio", 8: "Agosto", 
-                9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre"
-            }
-
-            with engine.begin() as connection:
-                for row in res_periodos:
-                    val_f_id = str(row[0])
-                    val_month_num = row[1]
-                    val_year = row[2]
-                    
-                    nombre_mes = meses_es[val_month_num]
-                    val_strNombre = f"{nombre_mes} {val_year}" 
-
-                    sql_fechas = text("""
-                        INSERT IGNORE INTO `fecha_ranking` (strNombreFecha, datFecha)
-                        VALUES (:nom, :fec)
-                    """)
-                        
-                    connection.execute(sql_fechas, {"nom": val_strNombre, "fec": val_f_id})
-                    print(f">>> [FECHA] Registrando periodo en tabla: {val_strNombre} | ID: {val_f_id}")
-
-                print(f"--- [OK] Tabla 'fecha_ranking' sincronizada con el Excel ---")
+            # La sincronizacion de `Fecha` y `fecha_ranking` se hace aparte
+            # (ver sincronizar_tablas_fecha), leyendo desde `Base` en vez de
+            # `base_para_rk`. Hoy solo se ejecuta en Prime.
 
     except Exception as e:
         print(f"Error en la sincronizacion: {e}")
+
+
+# Nombres de mes en espanol, compartidos por la sincronizacion de fechas.
+MESES_ES = {
+    1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril",
+    5: "Mayo", 6: "Junio", 7: "Julio", 8: "Agosto",
+    9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre",
+}
+
+
+def sincronizar_tablas_fecha(engine, servidor_label="?", tablas=("Fecha", "fecha_ranking")):
+    """Alinea las tablas de periodos indicadas con las fechas presentes en `Base`.
+
+    Lee desde `Base` (existe en ambos servidores), e inserta en cada tabla solo
+    los periodos que aun no esten registrados (idempotente, sin duplicar). NO
+    borra periodos historicos que ya no esten en Base: solo agrega los faltantes,
+    de modo que queden al dia con la ultima fecha cargada.
+
+    `tablas` controla cuales se sincronizan: en Prime ambas ('Fecha' y
+    'fecha_ranking'); en Clasico solo 'Fecha' (alli fecha_ranking no se usa).
+    """
+    print(f"\n--- Alineando {', '.join(tablas)} con Base ({servidor_label}) ---")
+    try:
+        with engine.begin() as conn:
+            res_periodos = conn.execute(text(f"""
+                SELECT DISTINCT
+                    DATE_FORMAT(Fecha, '%Y-%m') AS f_id,
+                    MONTH(Fecha) AS n_num,
+                    YEAR(Fecha)  AS a_val
+                FROM `{TABLA_DESTINO}`
+                WHERE Fecha IS NOT NULL
+            """)).fetchall()
+
+            if not res_periodos:
+                print(f"[ALERTA] Base ({servidor_label}) no tiene fechas validas: "
+                      f"no se actualizan 'Fecha' ni 'fecha_ranking'.")
+                return
+
+            for tabla in tablas:
+                nuevos = 0
+                for row in res_periodos:
+                    val_f_id = str(row[0])
+                    val_strNombre = f"{MESES_ES[row[1]]} {row[2]}"
+
+                    # Insert idempotente: solo si el periodo aun no existe.
+                    # Asi evitamos los duplicados que venia acumulando fecha_ranking
+                    # (que no tiene indice unico).
+                    sql_upsert = text(f"""
+                        INSERT INTO `{tabla}` (strNombreFecha, datFecha)
+                        SELECT :nom, :fec FROM DUAL
+                        WHERE NOT EXISTS (
+                            SELECT 1 FROM `{tabla}` WHERE datFecha = :fec
+                        )
+                    """)
+                    res = conn.execute(sql_upsert, {"nom": val_strNombre, "fec": val_f_id})
+                    if res.rowcount:
+                        nuevos += 1
+                        print(f">>> [{tabla}] Periodo agregado ({servidor_label}): "
+                              f"{val_strNombre} | {val_f_id}")
+
+                print(f"--- [OK] '{tabla}' alineada ({servidor_label}): "
+                      f"{nuevos} periodo(s) nuevo(s) ---")
+
+    except Exception as e:
+        print(f"Error alineando tablas de fecha ({servidor_label}): {e}")
 
 def validacion_de_tablas(engine):
     print("\n--- Verificando copia de datos, por favor espere... ---")
@@ -484,6 +517,7 @@ def ejecutar_migracion_prime(engine_prime):
             sincronizacion_tabla_pk(engine_prime)
             sincronizacion_ranking_incremental(engine_prime)
             validacion_de_tablas(engine_prime)
+            sincronizar_tablas_fecha(engine_prime, "PRIME", tablas=("Fecha", "fecha_ranking"))
         else:
             print("\nABORTANDO: Falló la validación en Prime. No se actualizará el Ranking.")
 
@@ -580,6 +614,8 @@ def ejecutar_migracion_clasico(engine_clasico, engine_prime):
         validacion_exitosa = verificar_integridad_total(df_completo, columnas_sql, engine_clasico, "CLASICO")
 
         if validacion_exitosa:
+            # En Clasico solo se alinea `Fecha` (fecha_ranking no se usa alli).
+            sincronizar_tablas_fecha(engine_clasico, "CLASICO", tablas=("Fecha",))
             ejecutar_migracion_prime(engine_prime)
 
     except Exception as e:
