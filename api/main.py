@@ -1824,6 +1824,82 @@ document.querySelectorAll('.fila').forEach(function(f){
   });
 });
 actualizarCuenta();
+
+// R5 — REGLA DE ORO en el frontend: aprobar/corregir como interés exige los
+// 3 campos (pact + comp + pres). Antes del submit, valida filas marcadas y
+// bloquea con mensaje + scroll al primer problema. Espejo de la validacion
+// del backend (sync_pendientes._aplicar_item -> "incompleto"); este JS es
+// para que el usuario LO VEA antes de mandar el form.
+function filasIncompletas(){
+  var probs = [];
+  document.querySelectorAll('.fila input.marcar:checked').forEach(function(cb){
+    var f = cb.closest('.fila');
+    if(!f) return;
+    var n = f.dataset.row;
+    var e = fila(n);
+    if(!e.dec || !e.pac) return;
+    if(e.dec.value === 'descartar') return;  // descarte explícito: OK
+    // Si IA dijo descarte y se aprueba tal cual, tampoco exige campos
+    var badge = f.querySelector('.badge.b-desc');
+    if(e.dec.value === 'aprobar' && badge) return;
+    var p = (e.pac.value || '').trim();
+    var c = (e.com.value || '').trim();
+    var pr = (e.pre.value || '').trim();
+    var falta = !p || !c || !pr;
+    // 'Sin Cla' / 'Sin cla' se acepta como comodín legítimo (no es vacío).
+    if(falta) probs.push(n);
+  });
+  return probs;
+}
+function actualizarBotonAprobar(){
+  var probs = filasIncompletas();
+  var btns = document.querySelectorAll('button.ap-bajo, button[type=submit][name=procesar], button#btn-procesar');
+  // Limpiar outlines previos
+  document.querySelectorAll('.fila').forEach(function(f){f.style.outline=''; });
+  var btn_principal = document.querySelector('#btn-procesar') ||
+                      document.querySelector('button[type=submit].btn-principal');
+  if(probs.length){
+    probs.forEach(function(n){
+      var f = document.querySelector('.fila[data-row="' + n + '"]');
+      if(f) f.style.outline = '2px solid #c0392b';
+    });
+    if(btn_principal){
+      btn_principal.disabled = true;
+      btn_principal.title = probs.length + ' fila(s) marcadas con campos vacíos — '
+        + 'completa pact + comp + pres o cambia a "descartar"';
+    }
+  } else if(btn_principal) {
+    btn_principal.disabled = false;
+    btn_principal.title = '';
+  }
+}
+// Validar al cambiar cualquier input de las filas marcadas
+['change','input','blur'].forEach(function(ev){
+  document.addEventListener(ev, function(e){
+    if(!e.target.closest('.fila input.f-pactivo, .fila select.f-comp, '
+       + '.fila select.f-pres, .fila select.decision, .fila input.marcar')) return;
+    actualizarBotonAprobar();
+  }, true);
+});
+// Validar al hacer submit del form principal
+document.querySelectorAll('form[action*="revisar-hoja"]').forEach(function(form){
+  form.addEventListener('submit', function(ev){
+    var probs = filasIncompletas();
+    if(probs.length){
+      ev.preventDefault();
+      alert('⚠ Hay ' + probs.length + ' fila(s) marcadas como interés sin '
+            + 'completar pactivo + composición + presentación.\n\n'
+            + 'Completa los 3 campos antes de aprobar, o cambia la decisión '
+            + 'a "descartar".\n\n'
+            + 'Te llevo a la primera.');
+      var primera = document.querySelector('.fila[data-row="' + probs[0] + '"]');
+      if(primera) primera.scrollIntoView({behavior:'smooth', block:'center'});
+      return false;
+    }
+  });
+});
+// Validación inicial al cargar
+actualizarBotonAprobar();
 </script>"""
 
 
