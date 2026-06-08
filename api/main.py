@@ -1839,9 +1839,10 @@ function filasIncompletas(){
     var e = fila(n);
     if(!e.dec || !e.pac) return;
     if(e.dec.value === 'descartar') return;  // descarte explícito: OK
-    // Si IA dijo descarte y se aprueba tal cual, tampoco exige campos
-    var badge = f.querySelector('.badge.b-desc');
-    if(e.dec.value === 'aprobar' && badge) return;
+    // Si IA dijo descarte (clase t-descarte) y dec=aprobar (apruebo el descarte
+    // tal cual), no exige campos. Usar classList en vez de .badge.b-desc para
+    // que funcione también en vista aprobador (que no renderiza el badge).
+    if(e.dec.value === 'aprobar' && f.classList.contains('t-descarte')) return;
     var p = (e.pac.value || '').trim();
     var c = (e.com.value || '').trim();
     var pr = (e.pre.value || '').trim();
@@ -1887,13 +1888,26 @@ document.querySelectorAll('form[action*="revisar-hoja"]').forEach(function(form)
     var probs = filasIncompletas();
     if(probs.length){
       ev.preventDefault();
-      alert('⚠ Hay ' + probs.length + ' fila(s) marcadas como interés sin '
-            + 'completar pactivo + composición + presentación.\n\n'
-            + 'Completa los 3 campos antes de aprobar, o cambia la decisión '
-            + 'a "descartar".\n\n'
-            + 'Te llevo a la primera.');
-      var primera = document.querySelector('.fila[data-row="' + probs[0] + '"]');
-      if(primera) primera.scrollIntoView({behavior:'smooth', block:'center'});
+      // En vez de bloquear, ofrecer destildar las incompletas y seguir.
+      // Caso típico: usuario quiere aprobar descartas que sí editó; la página
+      // también trae filas interés-IA con campos vacíos checked por default que
+      // no quería tocar — destildarlas las deja pendientes para otra ronda.
+      var msg = '⚠ Hay ' + probs.length + ' fila(s) marcadas como interés '
+                + 'sin pactivo + composición + presentación.\\n\\n'
+                + 'OK = destildar las ' + probs.length + ' incompletas y '
+                + 'aprobar el resto (quedan pendientes para revisar luego).\\n'
+                + 'Cancelar = revisarlas manualmente (te llevo a la primera).';
+      if(confirm(msg)){
+        probs.forEach(function(n){
+          var cb = document.querySelector('.fila[data-row="' + n + '"] input.marcar');
+          if(cb){ cb.checked = false; aplicarEstadoMarca(cb); }
+        });
+        actualizarCuenta();
+        form.submit();  // re-enviar sin re-disparar el handler
+      } else {
+        var primera = document.querySelector('.fila[data-row="' + probs[0] + '"]');
+        if(primera) primera.scrollIntoView({behavior:'smooth', block:'center'});
+      }
       return false;
     }
   });
