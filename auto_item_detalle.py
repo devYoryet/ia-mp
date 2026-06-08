@@ -210,6 +210,13 @@ def descomprimir(zip_path: Path) -> Path:
                     f"el CSV interno viene casi vacio ({info.file_size} bytes)"
                 )
             log(f"Descomprimiendo {nombre} ({info.file_size/1_048_576:.1f} MB)...")
+            # Borra un CSV viejo del mismo nombre antes de extraer: si quedo de
+            # una corrida previa con otro dueno, z.extract daria Permission
+            # denied. El dir es group-writable, asi que el unlink procede.
+            try:
+                (TEMP_DIR / nombre).unlink(missing_ok=True)
+            except OSError:
+                pass
             z.extract(nombre, TEMP_DIR)
     except zipfile.BadZipFile as exc:
         raise Reintentable(f"zip corrupto: {exc}") from exc
