@@ -62,6 +62,12 @@ services:
   # Para REACTIVAR temporalmente (CUIDADO con el gasto):
   #   docker compose --profile backtest up -d backtest
   # Para activarlo permanente: cambiar `profiles: [backtest]` por restart.
+  #
+  # TOPE DE GASTO 2026-06-08: INTERVALO 21600s (6h) + LOTE 100 mantiene el
+  # backtest en ~$7-10/semana (vs $15-25/día con INTERVALO 900s + LOTE 200).
+  # Cálculo: 4 ciclos/día × 100 filas × 2 tablas × ~25% a Claude × $0.005 =
+  # ~$1.0/día = $7/semana. Ajustar aquí si Anthropic cambia precio o cambia
+  # la mezcla de ramas (más ramas baratas = menos llamadas Claude).
   backtest:
     build: .
     image: clasificador-ia:latest
@@ -69,7 +75,7 @@ services:
     env_file: .env
     environment:
       MODO: test
-      INTERVALO_SEGUNDOS: "900"
-      LOTE_MAX: "200"
+      INTERVALO_SEGUNDOS: "21600"   # 6 horas (era 15 min)
+      LOTE_MAX: "100"               # 100 por tabla (era 200)
     profiles: ["backtest"]   # NO arranca por defecto
     logging: *log

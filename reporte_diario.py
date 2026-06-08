@@ -221,8 +221,12 @@ def main() -> None:
     if args.dia:
         dia = args.dia
     else:
-        ayer = (datetime.now() - _TZ_CHILE) - timedelta(days=1)
-        dia = ayer.strftime("%Y-%m-%d")
+        # El cron corre a las 22:00 UTC = 18:00 Chile (después del turno de
+        # Carolina 9-16h). Reporta sobre el DÍA CHILE ACTUAL (no ayer): la
+        # actividad humana del día Chile ya terminó. Bug pre-2026-06-08:
+        # restaba -1 día y los archivos quedaban con fecha N-1 confusa.
+        hoy_chile = (datetime.now() - _TZ_CHILE)
+        dia = hoy_chile.strftime("%Y-%m-%d")
     log.info("Generando reporte del %s", dia)
     rep = generar_reporte(dia)
     json_path = REPORTES_DIR / f"reporte_{dia}.json"
