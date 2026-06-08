@@ -2334,13 +2334,76 @@ def reglas(request: Request, msg: str = "") -> str:
             )
         return "".join(out)
 
+    # Vetos (tipo='veto') — regex de la cascada, editables sin deploy.
+    # NO se inyectan al prompt, cero costo extra. CRUD compartido con reglas
+    # porque viven en la misma tabla; la sección lista los activos + form.
+    try:
+        vetos = _query(
+            "SELECT id, nombre, regex_pattern, aplica_a, pactivo_filtro, "
+            "texto, creado_por, creado_en, activa, protegido "
+            "FROM clasificador_ia_reglas WHERE tipo='veto' "
+            "ORDER BY activa DESC, protegido DESC, creado_en DESC LIMIT 200"
+        )
+    except Exception:
+        vetos = []
+    es_admin = _es_admin(usuario)
+
+    def tabla_vetos(rows):
+        if not rows:
+            return "<div class=vacio>Sin vetos.</div>"
+        out = ["<table><tr><th>Nombre</th><th>Regex</th><th>Aplica a</th>"
+               "<th>Pactivo filtro</th><th>Razón</th><th>Por</th>"
+               "<th>Estado</th><th></th></tr>"]
+        for r in rows:
+            estado = "✓ activo" if r["activa"] else "✗ inactivo"
+            prot = " 🔒" if r["protegido"] else ""
+            acc = ""
+            if r["activa"] and (es_admin or not r["protegido"]):
+                acc = (f"<form method=post action='/reglas/veto/{r['id']}/desactivar' "
+                       f"style='display:inline'><button type=submit "
+                       f"onclick=\"return confirm('Desactivar veto {_e(r['nombre'] or r['id'])}?')\">"
+                       f"desactivar</button></form>")
+            elif not r["activa"] and (es_admin or not r["protegido"]):
+                acc = (f"<form method=post action='/reglas/veto/{r['id']}/activar' "
+                       f"style='display:inline'><button type=submit>activar</button></form>")
+            out.append(
+                f"<tr><td><b>{_e(r['nombre'] or '—')}</b>{prot}</td>"
+                f"<td><code style='font-size:11px'>{_e((r['regex_pattern'] or '')[:80])}</code></td>"
+                f"<td><small>{_e(r['aplica_a'] or 'inicio_cascada')}</small></td>"
+                f"<td><small>{_e(r['pactivo_filtro'] or '—')}</small></td>"
+                f"<td><small>{_e((r['texto'] or '')[:80])}</small></td>"
+                f"<td><small>{_e(r['creado_por'])}</small></td>"
+                f"<td>{estado}</td><td>{acc}</td></tr>"
+            )
+        out.append("</table>")
+        return "".join(out)
+
     aviso = f"<div class=aviso>{_e(msg)}</div>" if msg else ""
     cuerpo = (
-        "<h1>Reglas y correcciones — feedback al prompt</h1>" + aviso
+        "<h1>Reglas, correcciones y vetos — feedback al sistema</h1>" + aviso
         + "<form class=alta method=post action='/reglas'>"
         "<textarea name=texto placeholder='regla de negocio para la IA' required></textarea>"
         "<button type=submit>Agregar regla</button></form>"
-        f"<h2>Reglas de negocio ({len(reglas_)})</h2>" + tabla(reglas_)
+        f"<h2>Reglas de negocio ({len(reglas_)}) — van al prompt</h2>" + tabla(reglas_)
+        + f"<h2>Vetos en cascada ({sum(1 for v in vetos if v['activa'])}) — regex, NO van al prompt</h2>"
+        "<p style='font-size:13px;color:#6b7689'>"
+        "Los vetos son patrones regex que la cascada aplica antes de Claude — descartan filas "
+        "no farma (sensidiscos, stent, agua oxigenada, etc.) sin gastar tokens. Editables aquí "
+        "sin deploy. Los <b>protegidos 🔒</b> solo el admin puede modificar.</p>"
+        + tabla_vetos(vetos)
+        + "<details style='margin-top:10px'><summary>Agregar nuevo veto</summary>"
+        + "<form class=alta method=post action='/reglas/veto' style='display:grid;gap:8px;max-width:700px'>"
+        "<input name=nombre placeholder='nombre corto (ej. shampoo_no_farma)' required maxlength=100>"
+        "<input name=regex_pattern placeholder='regex (ej. \\bshampoo\\b)' required>"
+        "<select name=aplica_a>"
+        "<option value='inicio_cascada'>inicio_cascada (descarta cualquier fila que matchee)</option>"
+        "<option value='regla_diccionario'>regla_diccionario (solo si match simple en regla)</option>"
+        "<option value='modelo_pactivo'>modelo_pactivo</option>"
+        "<option value='modelo_marcas'>modelo_marcas</option>"
+        "</select>"
+        "<input name=pactivo_filtro placeholder='pactivo_filtro opcional (ej. Cinta Adhesiva Médica)'>"
+        "<input name=texto placeholder='razón / motivo (qué descarta)' required>"
+        "<button type=submit>Agregar veto</button></form></details>"
         + f"<h2>Errores corregidos — máxima prioridad ({len(corr)})</h2>"
         + tabla_correcciones_por_dia(corr)
     )
@@ -2366,6 +2429,84 @@ def agregar_regla(request: Request, texto: str = Form(...)):
         finally:
             conn.close()
     return RedirectResponse("/reglas?msg=Regla agregada.", status_code=303)
+
+
+@app.post("/reglas/veto")
+def agregar_veto(request: Request, nombre: str = Form(...),
+                 regex_pattern: str = Form(...), aplica_a: str = Form("inicio_cascada"),
+                 pactivo_filtro: str = Form(""), texto: str = Form(...)):
+    """Agregar un veto nuevo. Valida que la regex compile antes de guardar."""
+    import re as _re
+    nombre = nombre.strip()[:100]
+    regex_pattern = regex_pattern.strip()
+    aplica_a = (aplica_a or "inicio_cascada").strip()
+    pactivo_filtro = pactivo_filtro.strip() or None
+    razon = texto.strip()
+    if not (nombre and regex_pattern and razon):
+        return RedirectResponse("/reglas?msg=Faltan campos obligatorios.", status_code=303)
+    # Validar regex
+    try:
+        _re.compile(regex_pattern, _re.IGNORECASE)
+    except _re.error as exc:
+        return RedirectResponse(f"/reglas?msg=Regex inválida: {exc}", status_code=303)
+    u = usuario_actual(request)
+    creado_por = ((u["name"] if u else "") or "").strip()[:80] or "anónimo"
+    conn = conectar()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO clasificador_ia_reglas "
+                "(tipo, nombre, regex_pattern, aplica_a, pactivo_filtro, "
+                "texto, creado_por, creado_en, activa, protegido) "
+                "VALUES ('veto',%s,%s,%s,%s,%s,%s,%s,1,0)",
+                (nombre, regex_pattern, aplica_a, pactivo_filtro,
+                 razon, creado_por, datetime.now()),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    return RedirectResponse(f"/reglas?msg=Veto '{nombre}' agregado.", status_code=303)
+
+
+@app.post("/reglas/veto/{id_}/desactivar")
+def desactivar_veto(request: Request, id_: int):
+    u = usuario_actual(request)
+    es_admin = _es_admin(u)
+    conn = conectar()
+    try:
+        with conn.cursor() as cur:
+            # Si está protegido, solo admin puede tocar
+            cur.execute("SELECT nombre, protegido FROM clasificador_ia_reglas WHERE id=%s AND tipo='veto'", (id_,))
+            r = cur.fetchone()
+            if not r:
+                return RedirectResponse("/reglas?msg=Veto no existe.", status_code=303)
+            if r["protegido"] and not es_admin:
+                return RedirectResponse(f"/reglas?msg=Veto '{r['nombre']}' protegido — solo admin.", status_code=303)
+            cur.execute("UPDATE clasificador_ia_reglas SET activa=0 WHERE id=%s", (id_,))
+        conn.commit()
+    finally:
+        conn.close()
+    return RedirectResponse("/reglas?msg=Veto desactivado.", status_code=303)
+
+
+@app.post("/reglas/veto/{id_}/activar")
+def activar_veto(request: Request, id_: int):
+    u = usuario_actual(request)
+    es_admin = _es_admin(u)
+    conn = conectar()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT nombre, protegido FROM clasificador_ia_reglas WHERE id=%s AND tipo='veto'", (id_,))
+            r = cur.fetchone()
+            if not r:
+                return RedirectResponse("/reglas?msg=Veto no existe.", status_code=303)
+            if r["protegido"] and not es_admin:
+                return RedirectResponse(f"/reglas?msg=Veto '{r['nombre']}' protegido — solo admin.", status_code=303)
+            cur.execute("UPDATE clasificador_ia_reglas SET activa=1 WHERE id=%s", (id_,))
+        conn.commit()
+    finally:
+        conn.close()
+    return RedirectResponse("/reglas?msg=Veto activado.", status_code=303)
 
 
 # --------------------------------------------- Pactivos extra (R8 2026-06-03) --

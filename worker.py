@@ -30,8 +30,10 @@ from cruce_base import cargar_cruce_base
 from db import conexion_worker, reintentar
 from descarte_items import cargar_descartes
 from descarte_modelo import cargar_modelo_descarte
+from cascada import recargar_vetos_dinamicos
 from modelo_marcas import cargar_modelo_marcas
 from modelo_pactivo import cargar_modelo_pactivo
+import vetos_dinamicos as _vd
 from ejemplos import cargar_ejemplos
 from marcas import cargar_marcas_para_prompt
 from preclasificador import precargar_comp_pres
@@ -144,6 +146,10 @@ def main() -> None:
         log.warning("MODO PRODUCCION: se ESCRIBIRÁ en compra_agil / Licitaciones_diarias.")
 
     recursos = cargar_recursos()
+    # Vetos dinámicos: carga inicial + cache de versión. Si la BD falla, la
+    # cascada usa los hardcoded como fallback automáticamente.
+    recargar_vetos_dinamicos()
+    ultima_version_vetos = _vd.version()
     ultimo_refresco = time.time()
     ultima_version_extras = _version_pactivos_extra()
     una_vez = "--once" in sys.argv
@@ -153,12 +159,13 @@ def main() -> None:
             if not una_vez and time.time() - ultimo_refresco >= REFRESCO_SEGUNDOS:
                 log.info("Refresco diario de las estructuras en memoria.")
                 recursos = cargar_recursos()
+                recargar_vetos_dinamicos()
+                ultima_version_vetos = _vd.version()
                 ultimo_refresco = time.time()
                 ultima_version_extras = _version_pactivos_extra()
             else:
-                # Refresco INMEDIATO si cambió pactivos_extra (R8 2026-06-03):
-                # cuando un admin agrega/desactiva un pactivo desde el panel,
-                # detectamos el cambio comparando MAX(agregado_en, desactivado_en)
+                # Refresco INMEDIATO si cambió pactivos_extra o vetos: cuando un
+                # admin agrega/desactiva, detectamos el cambio comparando el hash
                 # contra el último visto. Recarga rápida (~5 s), sin esperar 24h.
                 v = _version_pactivos_extra()
                 if v and v != ultima_version_extras:
@@ -167,6 +174,12 @@ def main() -> None:
                     recursos = cargar_recursos()
                     ultima_version_extras = v
                     ultimo_refresco = time.time()
+                vv = _vd.version()
+                if vv and vv != ultima_version_vetos:
+                    log.info("Cambio en vetos detectado (%s -> %s); recargando.",
+                             ultima_version_vetos, vv)
+                    recargar_vetos_dinamicos()
+                    ultima_version_vetos = vv
             n = ciclo(recursos)
             log.info("Ciclo terminado: %d filas procesadas.", n)
         except Exception as exc:  # noqa: BLE001

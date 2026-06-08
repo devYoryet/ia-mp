@@ -31,6 +31,7 @@ import modelo_marcas as mm
 import modelo_pactivo as mp
 import preclasificador
 import reglas
+import vetos_dinamicos
 from reglas import PACTIVOS_NO_MATCH_DIRECTO, normalizar
 from config import config
 from descarte_items import COLUMNA_RUBRO
@@ -329,6 +330,61 @@ class Resultado:
     cache_write: int = 0
 
 
+# ============================================================================
+# VETOS DINÁMICOS — cache en memoria + fallback hardcoded
+# ============================================================================
+# `_VETOS_CACHE`: dict[aplica_a] -> list[(nombre, regex, pactivo_filtro, razon)]
+# Si None, no se cargó aún o falló BD; se usa el fallback hardcoded de abajo.
+_VETOS_CACHE: "dict | None" = None
+
+
+def recargar_vetos_dinamicos() -> None:
+    """Recarga la cache de vetos desde BD. Llamar al iniciar el worker y
+    cuando cambie la versión (ver `vetos_dinamicos.version()` en worker.py)."""
+    global _VETOS_CACHE
+    _VETOS_CACHE = vetos_dinamicos.cargar_vetos()
+
+
+def _vetos_para_rama(rama: str, fallback: list) -> list:
+    """Devuelve la lista de vetos para una rama. Prefiere BD; si la cache es
+    None (BD falló o no cargada), devuelve el fallback hardcoded."""
+    if _VETOS_CACHE is None:
+        return fallback
+    return _VETOS_CACHE.get(rama, [])
+
+
+def _vetos_fallback_inicio() -> list:
+    """Fallback hardcoded de los vetos de inicio_cascada — usar si BD cae.
+    Formato: [(nombre, regex, pactivo_filtro=None, razon), ...] igual que
+    el formato que devuelve `vetos_dinamicos.cargar_vetos()`."""
+    return [
+        ("sensidiscos", VETO_SENSIDISCOS, None,
+         "Sensidiscos (discos de antibiograma) — microbiología, no fármaco."),
+        ("stent_y_tiras", VETO_STENT_Y_TIRAS, None,
+         "Stent o tira epsilométrica — insumo quirúrgico/lab, no fármaco."),
+        ("lab_no_farma", VETO_LAB_NO_FARMA, None,
+         "Determinaciones moleculares / MGIT / kit diagnóstico — lab, no fármaco."),
+        ("ostomia", VETO_OSTOMIA, None,
+         "Bolsa de ostomía — insumo de ostomía, no fármaco."),
+        ("traquetubo", VETO_TRAQUETUBO, None,
+         "Traquetubo / tubo endotraqueal / cánula traqueal — instrumental."),
+        ("agua_oxigenada", VETO_AGUA_OXIGENADA, None,
+         "Agua oxigenada / peróxido de hidrógeno — no se clasifica."),
+        ("test_schirmer", VETO_TEST_SCHIRMER, None,
+         "Test de Schirmer — test oftalmológico, no fármaco."),
+        ("insumos_puntuales", VETO_INSUMOS_PUNTUALES, None,
+         "Insumo quirúrgico/endodóntico puntual — no fármaco."),
+        ("reactivos_lab", VETO_REACTIVOS_LAB, None,
+         "Reactivo de laboratorio (EDTA / tioglicolato / formol) — no fármaco."),
+        ("no_farma_puntuales_2", VETO_NO_FARMA_PUNTUALES_2, None,
+         "Insumo no farma (campo quirúrgico / microbrush / dental) — no fármaco."),
+        ("cosmetico_no_farma", VETO_COSMETICO_NO_FARMA, None,
+         "Cosmético (espuma de afeitar / bálsamo post / alcohol de quemar) — no fármaco."),
+        ("glucosa_sensor", VETO_GLUCOSA_SENSOR, None,
+         "Sensor / dispositivo de glucosa continua — no es el pactivo Glucosa."),
+    ]
+
+
 def clasificar_fila(
     tabla: str,
     fila: dict,
@@ -410,41 +466,20 @@ def _clasificar_fila_impl(
 
     # Vetos duros por glosa — descartan ANTES de cualquier rama porque las
     # ramas baratas (cruce_base, regla_diccionario) matchearían el medicamento
-    # o componente que viene EN el insumo y darían int=1 incorrecto. Migrados
-    # 2026-06-05 desde regla 385 del prompt a código (cero costo extra y siempre
-    # se aplican). Ver [[huecos-estructurales]] para el principio.
+    # o componente que viene EN el insumo y darían int=1 incorrecto.
+    #
+    # Vetos cargados desde la BD (clasificador_ia_reglas tipo='veto') vía
+    # `vetos_dinamicos.cargar_vetos()`. Editables desde /reglas SIN deploy.
+    # Fallback: si la BD falla, se usa la lista hardcoded (_vetos_fallback)
+    # con los 13 vetos originales — clasificación nunca empeora por caída BD.
+    # Ver [[huecos-estructurales]] para el principio.
     desc_o = descripcion or ""
-    _vetos = [
-        (VETO_SENSIDISCOS, "veto_sensidiscos",
-         "Sensidiscos (discos de antibiograma) — microbiología, no fármaco."),
-        (VETO_STENT_Y_TIRAS, "veto_stent_tiras",
-         "Stent o tira epsilométrica — insumo quirúrgico/lab, no fármaco."),
-        (VETO_LAB_NO_FARMA, "veto_lab_no_farma",
-         "Determinaciones moleculares / MGIT / kit diagnóstico — lab, no fármaco."),
-        (VETO_OSTOMIA, "veto_ostomia",
-         "Bolsa de ostomía — insumo de ostomía, no fármaco."),
-        (VETO_TRAQUETUBO, "veto_traquetubo",
-         "Traquetubo / tubo endotraqueal / cánula traqueal — instrumental."),
-        (VETO_AGUA_OXIGENADA, "veto_agua_oxigenada",
-         "Agua oxigenada / peróxido de hidrógeno — no se clasifica."),
-        (VETO_TEST_SCHIRMER, "veto_test_schirmer",
-         "Test de Schirmer — test oftalmológico, no fármaco."),
-        (VETO_INSUMOS_PUNTUALES, "veto_insumos_puntuales",
-         "Insumo quirúrgico/endodóntico puntual — no fármaco."),
-        (VETO_REACTIVOS_LAB, "veto_reactivos_lab",
-         "Reactivo de laboratorio (EDTA / tioglicolato / formol) — no fármaco."),
-        (VETO_NO_FARMA_PUNTUALES_2, "veto_no_farma_2",
-         "Insumo no farma (campo quirúrgico / microbrush / dental) — no fármaco."),
-        (VETO_COSMETICO_NO_FARMA, "veto_cosmetico_no_farma",
-         "Cosmético (espuma de afeitar / bálsamo post / alcohol de quemar) — no fármaco."),
-        (VETO_GLUCOSA_SENSOR, "veto_glucosa_sensor",
-         "Sensor / dispositivo de glucosa continua (Freestyle/Dexcom) — no es el pactivo Glucosa."),
-    ]
-    for regex, met, razon in _vetos:
+    vetos_inicio = _vetos_para_rama("inicio_cascada", _vetos_fallback_inicio())
+    for nombre, regex, _pfiltro, razon in vetos_inicio:
         if regex.search(desc_o):
             return Resultado(
                 interes=0, pactivo=None, composicion=None, presentacion=None,
-                confianza=0.97, metodo=met, razon=razon,
+                confianza=0.97, metodo=f"veto_{nombre}", razon=razon,
             )
     # Jabón líquido: veto con EXCEPCIÓN. Si la glosa dice "jabón líquido" pero
     # también "alcohol gel", NO vetar (es jabón-alcohol = Alcohol Gel, válido).
