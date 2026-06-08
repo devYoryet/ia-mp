@@ -169,12 +169,17 @@ form.alta textarea { flex: 1; min-width: 320px; }
 .consola { background: #1d2330; color: #f0f0f0; padding: 14px; border-radius: 8px;
            height: 320px; overflow-y: auto; font-family: 'SF Mono', Menlo, Consolas, monospace;
            font-size: 13px; white-space: pre-wrap; word-wrap: break-word; }
-.modulo-card { background: #fff; border-radius: 10px; padding: 18px 22px; text-decoration: none;
-               color: inherit; box-shadow: 0 1px 3px rgba(0,0,0,.08); display: block;
-               transition: transform .1s, box-shadow .1s; }
-.modulo-card:hover { transform: translateY(-2px); box-shadow: 0 4px 10px rgba(0,0,0,.10); }
-.modulo-card .titulo { font-size: 17px; font-weight: 700; margin-bottom: 6px; }
-.modulo-card .desc { font-size: 13px; color: #6b7689; }
+.modulo-card { background: #fff; border-radius: 12px; padding: 20px 22px; text-decoration: none;
+               color: inherit; box-shadow: 0 1px 3px rgba(0,0,0,.08);
+               border: 1px solid rgba(120,140,170,.14);
+               display: flex; flex-direction: column; flex: 1 1 300px;
+               transition: transform .1s, box-shadow .1s, border-color .1s; }
+.modulo-card:hover { transform: translateY(-2px); box-shadow: 0 6px 16px rgba(0,0,0,.10);
+                     border-color: rgba(70,110,190,.45); }
+.modulo-card .titulo { font-size: 16px; font-weight: 700; margin-bottom: 6px; display: flex;
+                       align-items: center; gap: 9px; }
+.modulo-card .titulo .emoji { font-size: 22px; line-height: 1; }
+.modulo-card .desc { font-size: 13px; color: #6b7689; line-height: 1.45; }
 
 /* /revision — patrón "todas tildadas por defecto, destildá las dudosas" */
 .fila { cursor: pointer; transition: opacity .15s, background .15s; }

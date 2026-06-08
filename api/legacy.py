@@ -367,7 +367,7 @@ def _lanzar_auto(periodo: str | None) -> int:
 def indice(request: Request) -> str:
     cards = "".join(
         f"<a class=modulo-card href='/legacy/{m.slug}'>"
-        f"<div class=titulo>{m.emoji} {escape(m.titulo)}</div>"
+        f"<div class=titulo><span class=emoji>{m.emoji}</span> {escape(m.titulo)}</div>"
         f"<div class=desc>{escape(m.descripcion)}</div></a>"
         for m in MODULOS.values()
     )
