@@ -5,7 +5,46 @@ import os
 import re
 import io
 import argparse
+import csv as _csv
+from datetime import datetime
 from math import ceil
+
+# Campos de texto largo (VARCHAR 500); el resto va a 255.
+CAMPOS_LARGOS = {"Descripcion", "EspecificacionComprador",
+                 "EspecificacionProveedor", "EspecificacionTotal"}
+
+# Mapeo columna_destino -> variantes normalizadas del origen. UNICA fuente de
+# verdad: la usan tanto el camino pandas (Excel) como el streaming (CSV grande).
+COL_VARIANTS = {
+    "Codigo": ["codigo", "id", "cod"],
+    "CodigoLicitacion": ["codigolicitacion", "codigo_conveniomarco", "licitacion"],
+    "Descripcion": ["descripcionobervaciones", "especificacioncomprador", "descripcion"],
+    "TipoMoneda": ["tipomonedaoc", "monedaitem", "moneda"],
+    "TotalNeto": ["totalnetooc", "totallineaneto", "neto"],
+    "Total": ["montototaloc", "montototalocpesoschilenos", "total"],
+    "CodigoOrganismo": ["codigoorganismopublico", "id_organismo"],
+    "NombreOrganismo": ["organismopublico", "institucion"],
+    "RutUnidad": ["rutunidadcompra", "rutunidad"],
+    "CodigoUnidad": ["codigounidadcompra", "codigounidad"],
+    "NombreUnidad": ["unidadcompra", "nombreunidad"],
+    "PaisUnidad": ["paisunidadcompra", "paisunidad"],
+    "ComunaUnidad": ["ciudadunidadcompra", "comuna"],
+    "RegionUnidad": ["regionunidadcompra", "region"],
+    "RutSucursalProveedor": ["rutsucursal", "rutsucursalproveedor"],
+    "NombreSucursalProveedor": ["sucursal", "nombresucursalproveedor"],
+    "CodigoSucursalProveedor": ["codigosucursal", "codigosucursalproveedor"],
+    "Correlativo": ["iditem", "correlativo"],
+    "CodigoProducto": ["codigoproductoonu", "sku"],
+    "Producto": ["nombreroductogenerico", "producto"],
+    "CantidadItem": ["cantidad", "cant"],
+    "PrecioNetoItem": ["precioneto", "unitario"],
+    "TotalItem": ["totallineaneto", "subtotal"],
+    "EspecificacionTotal": ["nombreroductogenerico", "nombre", "especificacion"],
+}
+
+
+def _norm_col(c):
+    return str(c).lower().replace(" ", "").replace("_", "").replace("/", "")
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', line_buffering=True)
 sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', line_buffering=True)
@@ -134,75 +173,58 @@ def prepare_dataframe(path):
         df = pd.read_excel(path, dtype=str)
 
     print(f"Filas leidas: {len(df)}")
+    return map_dataframe(df)
 
+
+def map_dataframe(df):
+    """Mapea/limpia un DataFrame a las columnas destino. Sirve tanto para el
+    archivo completo (Excel) como para cada CHUNK del CSV grande."""
     if len(df) == 0:
         return pd.DataFrame()
 
     # 3. Mapeo y Limpieza
-    def internal_norm(c): return str(c).lower().replace(" ", "").replace("_", "").replace("/", "")
-    df_cols_norm = {internal_norm(c): c for c in df.columns}
-    
-    col_variants = {
-        "Codigo": ["codigo", "id", "cod"],
-        "CodigoLicitacion": ["codigolicitacion", "codigo_conveniomarco", "licitacion"],
-        "Descripcion": ["descripcionobervaciones", "especificacioncomprador", "descripcion"],
-        "TipoMoneda": ["tipomonedaoc", "monedaitem", "moneda"],
-        "TotalNeto": ["totalnetooc", "totallineaneto", "neto"],
-        "Total": ["montototaloc", "montototalocpesoschilenos", "total"],
-        "CodigoOrganismo": ["codigoorganismopublico", "id_organismo"],
-        "NombreOrganismo": ["organismopublico", "institucion"],
-        "RutUnidad": ["rutunidadcompra", "rutunidad"],
-        "CodigoUnidad": ["codigounidadcompra", "codigounidad"],
-        "NombreUnidad": ["unidadcompra", "nombreunidad"],
-        "PaisUnidad": ["paisunidadcompra", "paisunidad"],
-        "ComunaUnidad": ["ciudadunidadcompra", "comuna"],
-        "RegionUnidad": ["regionunidadcompra", "region"],
-        "RutSucursalProveedor": ["rutsucursal", "rutsucursalproveedor"],
-        "NombreSucursalProveedor": ["sucursal", "nombresucursalproveedor"],
-        "CodigoSucursalProveedor": ["codigosucursal", "codigosucursalproveedor"],
-        "Correlativo": ["iditem", "correlativo"],
-        "CodigoProducto": ["codigoproductoonu", "sku"],
-        "Producto": ["nombreroductogenerico", "producto"],
-        "CantidadItem": ["cantidad", "cant"],
-        "PrecioNetoItem": ["precioneto", "unitario"],
-        "TotalItem": ["totallineaneto", "subtotal"],
-        "EspecificacionTotal": ["nombreroductogenerico", "nombre", "especificacion"] 
-    }
+    df_cols_norm = {_norm_col(c): c for c in df.columns}
 
     out = pd.DataFrame()
     for col in TABLE_COLUMNS:
         found = None
-        for variant in col_variants.get(col, [internal_norm(col)]):
+        for variant in COL_VARIANTS.get(col, [_norm_col(col)]):
             if variant in df_cols_norm:
                 found = df_cols_norm[variant]
                 break
-        
+
         if found:
             val = df[found].fillna("")
             text_val = val.astype(str).str.replace(r'[\r\n]+', ' ', regex=True).str.strip()
-            
-            if col == "FechaEnvio":
-                text_val = pd.to_datetime(text_val, dayfirst=True, errors='coerce').dt.strftime('%Y-%m-%d')
 
-            campos_largos = ["Descripcion", "EspecificacionComprador", "EspecificacionProveedor", "EspecificacionTotal"]
-            
-            if col in campos_largos:
-                text_val = text_val.str.slice(0, 500)
-            else:
-                text_val = text_val.str.slice(0, 255)
-            
-            # --- LA CLAVE ESTÁ AQUÍ ---
             if col == "FechaEnvio":
-                # La fecha SI necesita None para ser NULL, de lo contrario MySQL da error
+                # Fecha ISO 'YYYY-MM-DD'. NO usar dayfirst=True: en pandas>=2
+                # to_datetime infiere UN formato para toda la columna y con
+                # dayfirst infiere '%Y-%d-%m', con lo que '2026-05-26' (dia 26) se
+                # lee como "mes 26" -> NaT y se PIERDE la fecha (13k+/mes).
+                text_val = pd.to_datetime(text_val, format='%Y-%m-%d', errors='coerce').dt.strftime('%Y-%m-%d')
+
+            text_val = text_val.str.slice(0, 500 if col in CAMPOS_LARGOS else 255)
+
+            if col == "FechaEnvio":
                 out[col] = text_val.replace(["nan", "NaN", "NA", "None", "nan ", "NaT", ""], None)
             else:
-                # El resto lo reemplazamos por "" para que no sea NULL
                 out[col] = text_val.replace(["nan", "NaN", "NA", "None", "nan ", "NaT"], "")
         else:
-            # Si la columna no existe: NULL para fecha, vacío para texto
             out[col] = None if col == "FechaEnvio" else ""
 
     return out
+
+
+def _sanear_records(records):
+    """np.nan / float('nan') -> None (NULL). strftime() sobre fechas vacias deja
+    un np.nan (float) que MySQL no sabe vincular (error "Unknown column 'nan'").
+    Se hace a nivel de tupla porque en pandas 3.x el .where(notnull, None) NO
+    convierte el nan a None. Independiente de la version de pandas."""
+    return [
+        tuple(None if (isinstance(v, float) and v != v) else v for v in row)
+        for row in records
+    ]
 
 def create_table_if_not_exists(conn, table_name):
     cursor = conn.cursor()
@@ -332,7 +354,7 @@ def importar_a_servidor(df, table_name, server_name, db_name, force_local=False)
         create_table_if_not_exists(conn, table_name)
         actualizar_tabla_fecha(conn, table_name)
 
-        records = df.to_records(index=False).tolist()
+        records = _sanear_records(df.to_records(index=False).tolist())
         total = len(records)
         print("    Insercion masiva en {0}: {1} filas en '{2}'".format(
             server_name, total, table_name))
@@ -360,6 +382,164 @@ def importar_a_servidor(df, table_name, server_name, db_name, force_local=False)
             pass
 
 
+def _detectar_encoding(path):
+    """utf-8 si el inicio del archivo decodifica; si no, latin-1 (la fuente DA
+    suele venir en latin-1). Se decide UNA sola vez: reintentar a mitad de la
+    lectura por chunks duplicaria filas."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            f.read(2_000_000)
+        return "utf-8"
+    except UnicodeDecodeError:
+        return "latin1"
+
+
+def _build_col_index(header):
+    """De la cabecera del CSV arma {columna_destino: indice_en_la_fila o None}."""
+    norm = {_norm_col(c): i for i, c in enumerate(header)}
+    idx = {}
+    for col in TABLE_COLUMNS:
+        idx[col] = None
+        for variant in COL_VARIANTS.get(col, [_norm_col(col)]):
+            if variant in norm:
+                idx[col] = norm[variant]
+                break
+    return idx
+
+
+_RE_WS = __import__("re").compile(r"[\r\n]+")
+_NULOS = {"nan", "na", "none", "nat", "null"}
+
+
+def _limpiar_valor(col, raw):
+    """Mismo mapeo/limpieza que map_dataframe, pero por valor (sin pandas).
+    Devuelve str (texto) o None (NULL para FechaEnvio)."""
+    if raw is None:
+        return None if col == "FechaEnvio" else ""
+    s = _RE_WS.sub(" ", raw).strip()
+    if col == "FechaEnvio":
+        # ISO 'YYYY-MM-DD' -> normalizado, o NULL si vacio/invalido.
+        if not s or s.lower() in _NULOS:
+            return None
+        try:
+            return datetime.strptime(s[:10], "%Y-%m-%d").strftime("%Y-%m-%d")
+        except ValueError:
+            return None
+    if s.lower() in _NULOS:
+        s = ""
+    return s[:500] if col in CAMPOS_LARGOS else s[:255]
+
+
+def importar_csv_streaming(path, table_name, servers, db_name,
+                           batch_size=None, throttle=None):
+    """Importa el CSV grande LEYENDO FILA POR FILA (modulo csv, sin pandas) e
+    insertando en lotes. Memoria CONSTANTE: solo un lote en RAM (unos pocos MB),
+    sin los picos de ~1GB de pandas que ahogaban el server de 8GB. Escribe al
+    primario y al espejo en la misma pasada. Devuelve {server: bool}.
+
+    Pensado para NO sobrecargar nada:
+      - RAM: 1 lote a la vez (ITEM_DETALLE_BATCH filas).
+      - BD: executemany por lote + commit; ~N/lote viajes, trivial para MySQL.
+      - Opcional ITEM_DETALLE_THROTTLE (seg) de pausa entre lotes para dar aire."""
+    if batch_size is None:
+        batch_size = int(os.environ.get("ITEM_DETALLE_BATCH", str(BATCH_SIZE)))
+    if throttle is None:
+        throttle = float(os.environ.get("ITEM_DETALLE_THROTTLE", "0"))
+
+    # 1) Conectar + crear tabla/fecha en cada servidor.
+    conns = {}
+    for srv in servers:
+        try:
+            conn = vault.get_linux_mysql_connection(
+                database=db_name, force_local=False, server=srv)
+            conn.set_charset_collation("utf8mb4", "utf8mb4_unicode_ci")
+            cur = conn.cursor(); cur.execute("SET NAMES utf8mb4"); cur.close()
+            create_table_if_not_exists(conn, table_name)
+            actualizar_tabla_fecha(conn, table_name)
+            conns[srv] = conn
+            print("    Conexion OK: {0}".format(srv))
+        except Exception as e:
+            print("    [ERROR] Conexion {0}: {1}".format(srv, e))
+
+    primario = servers[0]
+    if primario not in conns:
+        return {s: False for s in servers}
+
+    encoding = _detectar_encoding(path)
+    print("    Encoding: {0} · lectura streaming fila-a-fila · lote={1} · throttle={2}s".format(
+        encoding, batch_size, throttle))
+
+    totales = {s: 0 for s in conns}
+
+    def _flush(lote):
+        for srv in list(conns.keys()):
+            conn = conns[srv]
+            try:
+                insert_batch(conn, table_name, lote)
+                totales[srv] += len(lote)
+            except Exception as e:
+                print("    [ERROR] {0}: insercion fallida: {1}".format(srv, e))
+                if srv == primario:
+                    raise
+                print("    [WARNING] Se deja de escribir en espejo {0}.".format(srv))
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                del conns[srv]
+
+    try:
+        with open(path, encoding=encoding, newline="") as f:
+            reader = _csv.reader(f, delimiter=";")
+            header = next(reader)
+            idx = _build_col_index(header)
+            lote = []
+            ncols = len(header)
+            for fila in reader:
+                if not fila:
+                    continue
+                rec = tuple(
+                    _limpiar_valor(col, fila[idx[col]] if (idx[col] is not None and idx[col] < len(fila)) else None)
+                    for col in TABLE_COLUMNS
+                )
+                lote.append(rec)
+                if len(lote) >= batch_size:
+                    _flush(lote)
+                    print("    Progreso: {0} filas en primario {1}".format(
+                        totales.get(primario, 0), primario), flush=True)
+                    lote = []
+                    if throttle:
+                        time.sleep(throttle)
+            if lote:
+                _flush(lote)
+                print("    Progreso: {0} filas en primario {1}".format(
+                    totales.get(primario, 0), primario), flush=True)
+    except Exception as e:
+        print("    [ERROR] Importacion abortada: {0}".format(e))
+        for c in conns.values():
+            try:
+                c.close()
+            except Exception:
+                pass
+        return {s: False for s in servers}
+
+    # Indice + cierre por servidor.
+    ok = {s: False for s in servers}
+    for srv, conn in conns.items():
+        try:
+            crear_indice_fecha_envio(conn, table_name)
+        except Exception:
+            pass
+        print("    {0}: {1} filas insertadas en '{2}'".format(srv, totales[srv], table_name))
+        print("=== {0}: OK ===".format(srv.upper()))
+        ok[srv] = True
+        try:
+            conn.close()
+        except Exception:
+            pass
+    return ok
+
+
 def main():
     # 1. Configuración de Argumentos
     ap = argparse.ArgumentParser()
@@ -377,26 +557,42 @@ def main():
         print("ERROR: Especifica --tabla manualmente.")
         return
 
-    # 3. Procesar el archivo (lo costoso: solo se hace una vez aunque escribamos
-    # en dos servidores).
+    # 3. Procesar el archivo.
     print("Procesando archivo: {0}".format(args.excel))
+    db_name = "prueba_practica" if args.local else "oc_items_segmentado"
+    espejo = ESPEJO_DE.get(args.server)
+    replicar = bool(espejo) and not args.no_espejo and not args.local
+
+    # CSV grande (caso real de produccion): procesar por CHUNKS para no cargar
+    # 2M filas en RAM. gestor_oc tiene 8 GB y el camino en-memoria revienta por
+    # OOM. La lectura es streaming; los INSERT siguen por lotes de BATCH_SIZE.
+    # Una sola pasada escribe al primario y, si corresponde, al espejo.
+    if args.excel.lower().endswith(".csv") and not args.local:
+        servers = [args.server] + ([espejo] if replicar else [])
+        res = importar_csv_streaming(args.excel, table_name, servers, db_name)
+        if not res.get(args.server):
+            print("\n[ERROR CRITICO] Fallo en servidor primario {0}.".format(args.server))
+            return
+        if replicar and not res.get(espejo):
+            print("\n[WARNING] Primario {0} quedo OK pero ESPEJO {1} fallo.".format(
+                args.server, espejo))
+            print("Para reintentar SOLO el espejo: --server {0} --no-espejo".format(espejo))
+        print("Importacion terminada con exito en tabla: {0}".format(table_name))
+        return
+
+    # Camino clasico en memoria (Excel o --local): archivos chicos.
     df = prepare_dataframe(args.excel)
     if len(df) == 0:
         print("Error: El DataFrame esta vacio, el archivo no se leyo bien o no tiene datos.")
         return
     print("DEBUG: Filas a insertar: {0}".format(len(df)))
 
-    db_name = "prueba_practica" if args.local else "oc_items_segmentado"
-
-    # 4. Primario.
     ok = importar_a_servidor(df, table_name, args.server, db_name, force_local=args.local)
     if not ok:
         print("\n[ERROR CRITICO] Fallo en servidor primario {0}.".format(args.server))
         return
 
-    # 5. Espejo (si corresponde).
-    espejo = ESPEJO_DE.get(args.server)
-    if args.local or args.no_espejo or not espejo:
+    if not replicar:
         print("\nImportacion terminada en {0} (sin espejo).".format(args.server))
         return
 
@@ -407,9 +603,8 @@ def main():
             args.server, espejo))
         print("Importacion terminada con exito en tabla: {0}".format(table_name))
     else:
-        # Clasico/primario ya quedo escrito; el espejo no. No es CRITICO porque
-        # los datos NO se perdieron, solo no se replicaron. Aviso para que se
-        # rehaga el espejo manualmente sin reprocesar el primario.
+        # Primario ya quedo escrito; el espejo no. No es CRITICO: los datos NO
+        # se perdieron, solo no se replicaron.
         print("\n[WARNING] Primario {0} quedo OK pero ESPEJO {1} fallo.".format(
             args.server, espejo))
         print("Para reintentar SOLO el espejo: subir el archivo con --server {0} --no-espejo".format(

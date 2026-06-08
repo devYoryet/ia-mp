@@ -31,6 +31,11 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTex
 from api.auth import usuario_actual
 from api.ui import escape, layout
 
+try:
+    from db import conectar
+except Exception:  # noqa: BLE001
+    conectar = None  # el panel de meses degrada a "sin datos" si no hay BD
+
 
 router = APIRouter(prefix="/legacy", tags=["legacy"])
 
@@ -230,6 +235,116 @@ def _lanzar(mod: Modulo, archivo: Path, nombre_original: str) -> int:
     return proc.pid
 
 
+# ================================================ ITEM DETALLE · MESES ===
+# Panel de estado: que meses ya estan cargados en oc_items_segmentado (tabla
+# YYYYMM en clasico) y disparador de la descarga+carga automatica.
+
+ITEM_DB = "oc_items_segmentado"
+AUTO_SCRIPT = Path(__file__).resolve().parent.parent / "auto_item_detalle.py"
+
+MESES_ES = {
+    1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril", 5: "Mayo", 6: "Junio",
+    7: "Julio", 8: "Agosto", 9: "Septiembre", 10: "Octubre", 11: "Noviembre",
+    12: "Diciembre",
+}
+
+# Cache corto del panel de meses: COUNT(*) sobre tablas grandes no debe correr
+# en cada poll del log.
+_MESES_CACHE: dict = {"ts": 0.0, "data": None, "n": 0}
+_MESES_TTL = 60.0
+
+
+def _meses_recientes(n: int) -> list[tuple[int, int]]:
+    """(year, month) de los ultimos n meses, desde el actual hacia atras."""
+    hoy = datetime.now()
+    y, m = hoy.year, hoy.month
+    out = []
+    for _ in range(n):
+        out.append((y, m))
+        m -= 1
+        if m == 0:
+            y -= 1
+            m = 12
+    return out
+
+
+def _estado_meses(n: int = 6) -> list[dict]:
+    """Para cada uno de los ultimos n meses: si la tabla YYYYMM existe en clasico
+    y cuantas filas tiene; mas si hay marcador .done del flujo automatico."""
+    ahora = time.time()
+    if (_MESES_CACHE["data"] is not None and _MESES_CACHE["n"] == n
+            and ahora - _MESES_CACHE["ts"] < _MESES_TTL):
+        return _MESES_CACHE["data"]
+
+    meses = _meses_recientes(n)
+    objetivo = [f"{y}{m:02d}" for (y, m) in meses]
+    counts: dict[str, object] = {}
+    if conectar is not None:
+        try:
+            conn = conectar(ITEM_DB)
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT TABLE_NAME FROM information_schema.tables "
+                        "WHERE TABLE_SCHEMA=%s AND TABLE_NAME REGEXP '^[0-9]{6}$'",
+                        (ITEM_DB,),
+                    )
+                    existentes = {list(r.values())[0] for r in cur.fetchall()}
+                    for yyyymm in objetivo:
+                        if yyyymm in existentes:
+                            cur.execute(f"SELECT COUNT(*) AS c FROM `{yyyymm}`")
+                            counts[yyyymm] = cur.fetchone()["c"]
+                        else:
+                            counts[yyyymm] = None
+            finally:
+                conn.close()
+        except Exception:  # noqa: BLE001
+            counts = {k: "?" for k in objetivo}
+
+    filas = []
+    for (y, m) in meses:
+        yyyymm = f"{y}{m:02d}"
+        c = counts.get(yyyymm)
+        cargado = isinstance(c, int) and c > 0
+        filas.append({
+            "periodo": f"{MESES_ES[m]} {y}",
+            "yyyymm": yyyymm,
+            "ym_url": f"{y}-{m}",  # mes sin cero, como espera el script/blob
+            "filas": c,
+            "cargado": cargado,
+            "marcador": (TEMP_DIR / f".item_detalle_{yyyymm}.done").exists(),
+        })
+    _MESES_CACHE.update(ts=ahora, data=filas, n=n)
+    return filas
+
+
+def _lanzar_auto(periodo: str | None) -> int:
+    """Lanza auto_item_detalle.py en background; escribe al MISMO log que el
+    modulo item-detalle para que la consola del panel muestre el progreso."""
+    log_path = _log_file("item-detalle")
+    args = [sys.executable, "-u", str(AUTO_SCRIPT)]
+    if periodo:
+        args += ["--periodo", periodo, "--force"]
+    log_path.write_text(
+        f"[{datetime.now().isoformat(timespec='seconds')}] "
+        f"Disparo MANUAL de descarga+carga automatica"
+        f"{' · periodo ' + periodo if periodo else ' · mes anterior'}\n"
+    )
+    fh = open(log_path, "a", buffering=1)
+    proc = subprocess.Popen(  # noqa: S603
+        args,
+        stdout=fh,
+        stderr=subprocess.STDOUT,
+        cwd=str(AUTO_SCRIPT.parent),
+        env={**os.environ, "PYTHONUNBUFFERED": "1"},
+        start_new_session=True,
+    )
+    _pid_file("item-detalle").write_text(str(proc.pid))
+    # Invalida el cache de meses para que el panel refleje el cambio al terminar.
+    _MESES_CACHE["ts"] = 0.0
+    return proc.pid
+
+
 # ============================================================== ÍNDICE ===
 
 @router.get("", response_class=HTMLResponse)
@@ -274,11 +389,68 @@ def _vista_modulo(slug: str, usuario: dict | None = None) -> str:
 
     finalizadores_js = ",".join(f"{f!r}" for f in mod.finalizadores)
 
+    # Panel de meses + disparador automatico: solo para Item Detalle.
+    panel_meses = ""
+    subtitulo_subida = ""
+    if slug == "item-detalle":
+        filas_html = ""
+        for it in _estado_meses(6):
+            if it["cargado"]:
+                estado = "<span class='st ok'>✓ cargado</span>"
+                filas_txt = f"{it['filas']:,}".replace(",", ".")
+                btn = "↻ Recargar"
+            elif it["filas"] == "?":
+                estado = "<span class='st warn'>sin BD</span>"
+                filas_txt = "—"
+                btn = "⬇ Cargar"
+            else:
+                estado = "<span class='st falta'>✗ falta</span>"
+                filas_txt = "—"
+                btn = "⬇ Cargar ahora"
+            marca = " <span title='cargado por el proceso automatico'>🤖</span>" if it["marcador"] else ""
+            filas_html += (
+                f"<tr><td>{escape(it['periodo'])}{marca}</td>"
+                f"<td><code>{it['yyyymm']}</code></td>"
+                f"<td>{estado}</td>"
+                f"<td style='text-align:right'>{filas_txt}</td>"
+                f"<td><button type=button class=sec "
+                f"onclick=\"cargarAuto('{it['ym_url']}')\">{btn}</button></td></tr>"
+            )
+        panel_meses = f"""
+<style>
+  table.meses {{ width:100%; border-collapse:collapse; margin:6px 0 4px; font-size:13.5px; }}
+  table.meses th, table.meses td {{ padding:8px 10px; border-bottom:1px solid rgba(120,140,170,.18); text-align:left; }}
+  table.meses th {{ font-size:11.5px; text-transform:uppercase; letter-spacing:.4px; color:#6b7689; }}
+  .st {{ font-weight:600; font-size:12.5px; }}
+  .st.ok {{ color:#1a9d5a; }}
+  .st.falta {{ color:#c0392b; }}
+  .st.warn {{ color:#b8860b; }}
+</style>
+<h2>📦 Meses de Item Detalle</h2>
+<div class=aviso>Estado de la tabla mensual <code>YYYYMM</code> en <code>oc_items_segmentado</code> (clásico).
+🤖 = cargado por el proceso automático. <b>Cargar</b> baja el ZIP del portal de transparencia,
+lo descomprime, valida e importa a clásico + prime — todo automático; seguí el avance en la consola de abajo.
+Se muestran los últimos 6 meses.</div>
+<table class=meses>
+<thead><tr><th>Periodo</th><th>Tabla</th><th>Estado</th><th>Filas</th><th>Acción</th></tr></thead>
+<tbody>{filas_html}</tbody>
+</table>
+<div style='margin:8px 0 20px'>
+  <button type=button class=sec onclick="cargarAuto('')">⬇ Cargar mes anterior automáticamente</button>
+</div>
+"""
+        subtitulo_subida = (
+            "<h2>📤 Subida manual (respaldo)</h2>"
+            "<div class=aviso>Si el automático no encontró el archivo o querés forzar uno propio, "
+            "subí el CSV a mano. Funciona igual que siempre.</div>"
+        )
+
     cuerpo = f"""
 <h1>{mod.emoji} {escape(mod.titulo)}</h1>
 <div class=aviso>{escape(mod.descripcion)} &nbsp;·&nbsp; Script:
 <code>bin/{mod.script}</code> &nbsp;·&nbsp; Log: <code>{escape(mod.log)}</code></div>
-
+{panel_meses}
+{subtitulo_subida}
 <div class=cards>
   <div class=card style='flex-basis:100%'>
     <form id=formSubida onsubmit='return false'>
@@ -332,12 +504,35 @@ def _vista_modulo(slug: str, usuario: dict | None = None) -> str:
     }}
   }}
 
+  function esLogin(t) {{
+    return t && (t.indexOf('login-card') >= 0 || t.indexOf('<title>Acceso') >= 0);
+  }}
+
+  window.cargarAuto = async function(periodo) {{
+    const txt = periodo ? ('el periodo ' + periodo) : 'el mes anterior';
+    if (!confirm('¿Descargar e importar ' + txt + ' automáticamente?\\n'
+                 + 'Baja el ZIP del portal, valida e importa a clásico + prime.')) return;
+    setLog('Disparando descarga+carga automática de ' + txt + '...');
+    try {{
+      const fd = new FormData();
+      if (periodo) fd.append('periodo', periodo);
+      const resp = await fetch(BASE + '/auto', {{method: 'POST', body: fd}});
+      if (!resp.ok) {{ setLog('No se pudo iniciar (HTTP ' + resp.status + '). ¿Sesión expirada? Recargá con F5.'); return; }}
+      iniciarSeguimiento();
+    }} catch (e) {{ setLog('Error al iniciar: ' + e); }}
+  }};
+
   function iniciarSeguimiento() {{
     if (intervaloLog) clearInterval(intervaloLog);
     intervaloLog = setInterval(() => {{
       fetch(BASE + '/log?t=' + Date.now())
         .then(r => r.text())
         .then(data => {{
+          if (esLogin(data)) {{
+            clearInterval(intervaloLog);
+            setLog('⚠ Sesión expirada. Recargá la página (F5) e iniciá sesión para ver el progreso.');
+            return;
+          }}
           setLog(data);
           const upper = data.toUpperCase();
           if (FINALIZADORES.some(f => upper.includes(f.toUpperCase()))) {{
@@ -416,7 +611,7 @@ def _vista_modulo(slug: str, usuario: dict | None = None) -> str:
   fetch(BASE + '/log?t=' + Date.now())
     .then(r => r.text())
     .then(data => {{
-      if (data && !FINALIZADORES.some(f => data.toUpperCase().includes(f.toUpperCase()))) {{
+      if (data && !esLogin(data) && !FINALIZADORES.some(f => data.toUpperCase().includes(f.toUpperCase()))) {{
         iniciarSeguimiento();
       }}
     }})
@@ -425,6 +620,25 @@ def _vista_modulo(slug: str, usuario: dict | None = None) -> str:
 </script>
 """
     return layout(mod.titulo, cuerpo, usuario=usuario)
+
+
+@router.post("/item-detalle/auto")
+async def item_detalle_auto(request: Request, periodo: str = Form(default="")):
+    """Dispara la descarga+carga automatica del mes anterior (o `periodo` YYYY-M)."""
+    pf = _pid_file("item-detalle")
+    if pf.exists():
+        try:
+            if _proceso_vivo(int(pf.read_text().strip())):
+                raise HTTPException(409, "Ya hay un proceso de Item Detalle en curso.")
+        except (ValueError, OSError):
+            pass
+    pid = _lanzar_auto(periodo.strip() or None)
+    return {"ok": True, "pid": pid}
+
+
+@router.get("/item-detalle/estado-meses")
+def item_detalle_estado_meses(n: int = 6):
+    return JSONResponse(_estado_meses(min(max(n, 1), 24)))
 
 
 @router.get("/{slug}", response_class=HTMLResponse)
