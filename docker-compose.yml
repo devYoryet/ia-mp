@@ -52,12 +52,16 @@ services:
     restart: unless-stopped
     logging: *log
 
-  # Backtest CONTINUO en paralelo a producción — corre worker.py en MODO=test:
-  # cada INTERVALO_SEGUNDOS agarra LOTE_MAX filas que YA clasificó una persona
-  # y las pasa por la cascada, midiendo IA vs humano. NO toca producción
-  # (filas_para_backtest excluye Bot/IA_). Comparte la imagen + el .env del
-  # worker, solo cambian MODO/INTERVALO/LOTE. Resultados en `clasificador_ia_backtest`,
-  # visualizables en /comparacion. Ver `entrenar_pactivo.py` y [[resultados-backtest]].
+  # Backtest CONTINUO — DESHABILITADO 2026-06-08. Estaba gastando ~$15-25/día
+  # ($160 acumulado desde may-22) llamando a Claude para medir IA vs humano
+  # cada 15 min. Era invisible en clasificador_ia_log (guarda en
+  # clasificador_ia_backtest). Yoryet pidió: backtests masivos/mensuales SIN
+  # gastar API. Sustitución pendiente: backtest_sin_claude.py que mide solo
+  # las ramas deterministas (cruce/regla/modelos/vetos) y skipea Claude.
+  #
+  # Para REACTIVAR temporalmente (CUIDADO con el gasto):
+  #   docker compose --profile backtest up -d backtest
+  # Para activarlo permanente: cambiar `profiles: [backtest]` por restart.
   backtest:
     build: .
     image: clasificador-ia:latest
@@ -65,7 +69,7 @@ services:
     env_file: .env
     environment:
       MODO: test
-      INTERVALO_SEGUNDOS: "900"   # 15 minutos entre lotes
-      LOTE_MAX: "200"              # 200 filas por lote por tabla (400 totales)
-    restart: unless-stopped
+      INTERVALO_SEGUNDOS: "900"
+      LOTE_MAX: "200"
+    profiles: ["backtest"]   # NO arranca por defecto
     logging: *log
