@@ -1483,11 +1483,45 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
                 tipo_cls_final = "t-nuevo"  # corregida
             else:
                 tipo_cls_final = "t-descarte"  # descartada
+            # R4 — Form de edición de fila REVISADA. Permite cambiar
+            # pactivo/comp/pres post-aprobación. Registra cada cambio en
+            # clasificador_ia_log_revisiones (auditoría/timeline). Compartido
+            # entre toda la cola — no requiere permisos especiales.
+            pact_act = (f.get("feedback_pactivo") or f.get("pactivo_sugerido") or "")
+            info_rev = cat.get(normalizar(pact_act))
+            comps_rev = info_rev["comp"] if info_rev else []
+            press_rev = info_rev["pres"] if info_rev else []
+            # Composición/presentación actuales del legacy (si existen):
+            comp_act = f.get("composicion_sugerida") or ""
+            pres_act = f.get("presentacion_sugerida") or ""
+            edicion_revisada = (
+                f"<details class='reedicion'>"
+                f"<summary style='cursor:pointer;padding:4px 0;color:#2f6fb0;"
+                f"font-size:13px'>✎ editar pactivo / composición / presentación</summary>"
+                f"<form method=post action='/revisadas/{f['id']}/reeditar' "
+                f"style='display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;"
+                f"padding:8px;background:#f5f8fc;border-radius:6px;margin-top:4px'>"
+                f"<div><label style='font-size:11px;color:#6b7689'>pactivo</label>"
+                f"<input type=text name=pactivo class=f-pactivo "
+                f"value=\"{_e(pact_act)}\" style='width:240px'></div>"
+                f"<div><label style='font-size:11px;color:#6b7689'>composición</label>"
+                + _select("composicion", f"r{n}", "f-comp", comp_act, comps_rev)
+                + "</div>"
+                f"<div><label style='font-size:11px;color:#6b7689'>presentación</label>"
+                + _select("presentacion", f"r{n}", "f-pres", pres_act, press_rev)
+                + "</div>"
+                f"<input type=text name=motivo class=motivo placeholder='motivo del cambio' "
+                f"required style='flex:1;min-width:160px'>"
+                f"<button type=submit class='ap-bajo' style='background:#2f6fb0;color:#fff;"
+                f"border:0;padding:7px 14px;border-radius:5px;font-weight:600;cursor:pointer'>"
+                f"actualizar</button>"
+                f"</form></details>"
+            )
             bloques.append(
                 f"<div class='fila revisada {tipo_cls_final}'>"
                 f"<div class=fila-head><div style='width:24px'></div>{meta_html}</div>"
                 f"<div class=desc>{_e((f.get('descripcion') or '')[:300])}</div>"
-                f"{ia_prop}{humano}{razon_html}"
+                f"{ia_prop}{humano}{razon_html}{edicion_revisada}"
                 f"</div>"
             )
             continue
@@ -2773,6 +2807,103 @@ def pactivos_extra_desactivar(request: Request, id_: int):
     finally:
         conn.close()
     return RedirectResponse(f"/pactivos-extra?msg={msg}", status_code=303)
+
+
+@app.post("/revisadas/{log_id}/reeditar")
+def reeditar_revisada(request: Request, log_id: int,
+                      pactivo: str = Form(""),
+                      composicion: str = Form(""),
+                      presentacion: str = Form(""),
+                      motivo: str = Form(...)):
+    """R4 — re-editar una fila ya revisada. Actualiza compra_agil/Licitaciones_diarias
+    + clasificador_ia_log + registra en clasificador_ia_log_revisiones (timeline).
+    Cualquier usuario logueado puede usarlo.
+
+    Regla de oro: si el estado es interés (estado_gestor=1), exige los 3 campos
+    no vacíos. Si es descarte, los limpia.
+    """
+    u = usuario_actual(request)
+    if not u:
+        return RedirectResponse("/login", status_code=303)
+    revisor = (u["name"] or "").strip()[:80] or "anónimo"
+    pact = (pactivo or "").strip()
+    comp = (composicion or "").strip()
+    pres = (presentacion or "").strip()
+    mot = (motivo or "").strip()
+    if not mot:
+        return RedirectResponse("/revision?estado=revisadas&msg=Motivo obligatorio.",
+                                status_code=303)
+
+    conn = conectar()
+    try:
+        with conn.cursor() as cur:
+            # 1) Leer estado actual (origen + log)
+            cur.execute(
+                "SELECT tabla_origen, fila_id FROM clasificador_ia_log WHERE id=%s",
+                (log_id,))
+            r = cur.fetchone()
+            if not r:
+                return RedirectResponse("/revision?estado=revisadas&msg=Log no existe.",
+                                        status_code=303)
+            tabla_o = r["tabla_origen"]
+            if tabla_o not in ("compra_agil", "Licitaciones_diarias"):
+                return RedirectResponse("/revision?estado=revisadas&msg=Tabla inválida.",
+                                        status_code=303)
+            cur.execute(
+                f"SELECT pactivo, composicion, presentacion, estado_gestor "
+                f"FROM `{tabla_o}` WHERE id=%s", (r["fila_id"],))
+            antes = cur.fetchone() or {}
+
+            # 2) Decidir nuevo estado: si pactivo viene vacío → descarte; si
+            # viene → interés con los 3 campos.
+            if pact:
+                if not (comp and pres):
+                    return RedirectResponse(
+                        f"/revision?estado=revisadas&msg=Para clasificar como "
+                        f"interés se requiere pact + comp + pres (regla de oro).",
+                        status_code=303)
+                nuevo_estado = 1
+                nueva_pact, nueva_comp, nueva_pres = pact, comp, pres
+            else:
+                nuevo_estado = 0
+                nueva_pact, nueva_comp, nueva_pres = None, None, None
+
+            # 3) Actualizar la tabla origen
+            cur.execute(
+                f"UPDATE `{tabla_o}` SET pactivo=%s, composicion=%s, "
+                f"presentacion=%s, estado_gestor=%s, nombre_clasificador=%s, "
+                f"fecha_clasificacion=%s WHERE id=%s",
+                (nueva_pact, nueva_comp, nueva_pres, nuevo_estado, revisor,
+                 datetime.now(), r["fila_id"])
+            )
+            # 4) Actualizar el log (feedback)
+            cur.execute(
+                "UPDATE clasificador_ia_log SET feedback_pactivo=%s, "
+                "feedback_notas=CONCAT(IFNULL(feedback_notas,''), %s) "
+                "WHERE id=%s",
+                (nueva_pact, f"\n[reedit {datetime.now():%Y-%m-%d %H:%M}] {mot}",
+                 log_id))
+            # 5) Insertar en histórico
+            cur.execute(
+                "INSERT INTO clasificador_ia_log_revisiones "
+                "(log_id, revisor, revisado_en, pactivo_antes, composicion_antes, "
+                "presentacion_antes, estado_antes, pactivo_despues, composicion_despues, "
+                "presentacion_despues, estado_despues, motivo) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                (log_id, revisor, datetime.now(),
+                 antes.get("pactivo"), antes.get("composicion"),
+                 antes.get("presentacion"), antes.get("estado_gestor"),
+                 nueva_pact, nueva_comp, nueva_pres, nuevo_estado, mot)
+            )
+        conn.commit()
+    except Exception as exc:  # noqa: BLE001
+        return RedirectResponse(f"/revision?estado=revisadas&msg=Error: {exc}",
+                                status_code=303)
+    finally:
+        conn.close()
+    return RedirectResponse(
+        f"/revision?estado=revisadas&msg=Fila {log_id} actualizada por {revisor}.",
+        status_code=303)
 
 
 @app.get("/reportes", response_class=HTMLResponse)
