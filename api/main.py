@@ -2299,13 +2299,31 @@ def reglas(request: Request, msg: str = "") -> str:
         return str(v)[:10]
 
     def tabla(rows):
+        """Reglas colapsables — cada una es un <details> con título extraído
+        del texto (lo que va entre **...** al inicio) y cuerpo expandible."""
         if not rows:
             return "<div class=vacio>Sin registros.</div>"
-        f = "".join(
-            f"<tr><td>{_e(r['texto'])}</td><td>{_e(r['creado_por'])}</td>"
-            f"<td>{_e(_ts_chile(r['creado_en']))}</td></tr>" for r in rows
-        )
-        return f"<table><tr><th>Texto</th><th>Por</th><th>Fecha</th></tr>{f}</table>"
+        import re as _re
+        out = []
+        for r in rows:
+            txt = (r["texto"] or "").strip()
+            # Extraer título de los primeros **...**
+            m = _re.match(r"\*\*([^*]{3,120})\*\*", txt)
+            titulo = m.group(1).strip(" :—-") if m else (txt[:80] + "…")
+            resto = txt[m.end():].strip(" :—-\n") if m else txt
+            por = _e(r["creado_por"] or "")
+            fecha = _e(_ts_chile(r["creado_en"]))
+            # Cuerpo: convertir saltos de línea / negritas básicas a HTML
+            cuerpo_html = _e(resto).replace("\n", "<br>")
+            cuerpo_html = _re.sub(r"\*\*([^*]+?)\*\*", r"<b>\1</b>", cuerpo_html)
+            out.append(
+                f"<details class='regla-card'>"
+                f"<summary><span class='regla-titulo'>{_e(titulo)}</span>"
+                f"<span class='regla-meta'>{por} · {fecha}</span></summary>"
+                f"<div class='regla-body'>{cuerpo_html}</div>"
+                f"</details>"
+            )
+        return "<div class='regla-list'>" + "".join(out) + "</div>"
 
     def tabla_correcciones_por_dia(rows):
         """Agrupa correcciones por DATE(creado_en), día más reciente arriba.
@@ -2349,62 +2367,153 @@ def reglas(request: Request, msg: str = "") -> str:
     es_admin = _es_admin(usuario)
 
     def tabla_vetos(rows):
+        """Vetos compactos — cada uno una fila con nombre, dónde aplica,
+        razón y botón. La regex completa va en details expandible."""
         if not rows:
             return "<div class=vacio>Sin vetos.</div>"
-        out = ["<table><tr><th>Nombre</th><th>Regex</th><th>Aplica a</th>"
-               "<th>Pactivo filtro</th><th>Razón</th><th>Por</th>"
-               "<th>Estado</th><th></th></tr>"]
+        out = ["<div class='veto-list'>"]
         for r in rows:
-            estado = "✓ activo" if r["activa"] else "✗ inactivo"
-            prot = " 🔒" if r["protegido"] else ""
+            estado_cls = "veto-on" if r["activa"] else "veto-off"
+            estado_txt = "✓ activo" if r["activa"] else "✗ inactivo"
+            prot = "🔒" if r["protegido"] else ""
+            puede_tocar = r["activa"] and (es_admin or not r["protegido"]) or \
+                          (not r["activa"] and (es_admin or not r["protegido"]))
             acc = ""
             if r["activa"] and (es_admin or not r["protegido"]):
                 acc = (f"<form method=post action='/reglas/veto/{r['id']}/desactivar' "
-                       f"style='display:inline'><button type=submit "
-                       f"onclick=\"return confirm('Desactivar veto {_e(r['nombre'] or r['id'])}?')\">"
+                       f"style='display:inline'><button class='btn-mini' type=submit "
+                       f"onclick=\"return confirm('Desactivar {_e(r['nombre'] or r['id'])}?')\">"
                        f"desactivar</button></form>")
             elif not r["activa"] and (es_admin or not r["protegido"]):
                 acc = (f"<form method=post action='/reglas/veto/{r['id']}/activar' "
-                       f"style='display:inline'><button type=submit>activar</button></form>")
+                       f"style='display:inline'><button class='btn-mini' type=submit>"
+                       f"activar</button></form>")
+            pact_f = f" · pact: <code>{_e(r['pactivo_filtro'])}</code>" if r['pactivo_filtro'] else ""
             out.append(
-                f"<tr><td><b>{_e(r['nombre'] or '—')}</b>{prot}</td>"
-                f"<td><code style='font-size:11px'>{_e((r['regex_pattern'] or '')[:80])}</code></td>"
-                f"<td><small>{_e(r['aplica_a'] or 'inicio_cascada')}</small></td>"
-                f"<td><small>{_e(r['pactivo_filtro'] or '—')}</small></td>"
-                f"<td><small>{_e((r['texto'] or '')[:80])}</small></td>"
-                f"<td><small>{_e(r['creado_por'])}</small></td>"
-                f"<td>{estado}</td><td>{acc}</td></tr>"
+                f"<div class='veto-card {estado_cls}'>"
+                f"<div class='veto-head'>"
+                f"<span class='veto-nombre'>{prot} <b>{_e(r['nombre'] or '—')}</b></span>"
+                f"<span class='veto-aplica'>{_e(r['aplica_a'] or 'inicio_cascada')}{pact_f}</span>"
+                f"<span class='veto-estado'>{estado_txt}</span>"
+                f"<span class='veto-acc'>{acc}</span>"
+                f"</div>"
+                f"<div class='veto-razon'>{_e(r['texto'] or '')}</div>"
+                f"<details class='veto-regex'><summary>regex</summary>"
+                f"<code>{_e(r['regex_pattern'] or '')}</code></details>"
+                f"</div>"
             )
-        out.append("</table>")
+        out.append("</div>")
         return "".join(out)
 
     aviso = f"<div class=aviso>{_e(msg)}</div>" if msg else ""
+    # CSS inline para mejorar la presentación. No depende de ui.py.
+    css = """<style>
+.regla-list { display: flex; flex-direction: column; gap: 8px; margin: 12px 0; }
+.regla-card { border: 1px solid #d9e0ea; border-left: 4px solid #2f6fb0;
+              border-radius: 7px; background: #fff; }
+.regla-card summary { padding: 10px 14px; cursor: pointer; list-style: none;
+                      display: flex; justify-content: space-between; gap: 12px;
+                      flex-wrap: wrap; font-size: 14px; }
+.regla-card summary::-webkit-details-marker { display: none; }
+.regla-card[open] summary { border-bottom: 1px solid #eef1f4; background: #f5f8fc; }
+.regla-titulo { font-weight: 600; color: #1d2330; flex: 1; min-width: 200px; }
+.regla-meta { color: #6b7689; font-size: 12px; }
+.regla-body { padding: 12px 16px 14px; font-size: 13.5px; line-height: 1.55;
+              color: #2a3142; max-height: 460px; overflow-y: auto; }
+.regla-body code { background: #eef1f4; padding: 1px 5px; border-radius: 3px;
+                   font-size: 12px; }
+
+.veto-list { display: flex; flex-direction: column; gap: 6px; margin: 12px 0; }
+.veto-card { border: 1px solid #d9e0ea; border-radius: 6px; padding: 8px 12px;
+             background: #fff; font-size: 13px; }
+.veto-card.veto-on { border-left: 4px solid #1b6b3a; }
+.veto-card.veto-off { border-left: 4px solid #c0392b; background: #faf2f2; opacity: 0.8; }
+.veto-head { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
+.veto-nombre { font-size: 14px; min-width: 200px; }
+.veto-aplica { color: #6b7689; font-size: 12px; flex: 1; }
+.veto-aplica code { background: #eef1f4; padding: 1px 5px; border-radius: 3px;
+                    font-size: 11px; }
+.veto-estado { font-size: 12px; color: #6b7689; }
+.veto-razon { color: #44506a; font-size: 12.5px; margin-top: 4px;
+              padding-left: 4px; border-left: 2px solid #d9e0ea; padding-left: 8px;
+              padding-top: 4px; padding-bottom: 4px; }
+.veto-regex { margin-top: 5px; font-size: 11px; }
+.veto-regex summary { color: #6b7689; cursor: pointer; padding: 3px 0; }
+.veto-regex code { background: #f6f7fa; padding: 6px 10px; border-radius: 4px;
+                   display: block; word-break: break-all; font-size: 11px;
+                   color: #4a4a4a; margin-top: 4px; }
+.btn-mini { background: #fff; border: 1px solid #cdd5e0; border-radius: 5px;
+            padding: 4px 10px; font-size: 12px; cursor: pointer; }
+.btn-mini:hover { background: #f3f6fa; }
+
+.seccion-titulo { display: flex; align-items: baseline; gap: 12px;
+                  margin: 28px 0 8px; padding-bottom: 6px;
+                  border-bottom: 2px solid #2f6fb0; }
+.seccion-titulo h2 { margin: 0; font-size: 18px; }
+.seccion-titulo .badge { font-size: 12px; padding: 2px 10px; border-radius: 14px;
+                         background: #d9f0e1; color: #1b6b3a; }
+.seccion-titulo .badge-warn { background: #fdeccf; color: #7a4e09; }
+.seccion-desc { color: #6b7689; font-size: 13px; margin: 0 0 12px; }
+
+form.alta-veto { display: grid; gap: 8px; max-width: 760px;
+                 padding: 14px; background: #f5f8fc;
+                 border: 1px solid #d9e0ea; border-radius: 7px;
+                 margin-top: 10px; }
+form.alta-veto input, form.alta-veto select { padding: 7px 10px;
+            border: 1px solid #cdd5e0; border-radius: 5px; font-size: 13px; }
+form.alta-veto button { padding: 8px 16px; background: #2f6fb0; color: #fff;
+            border: 0; border-radius: 5px; font-weight: 600; cursor: pointer; }
+form.alta-veto label { font-size: 12px; color: #6b7689; }
+</style>"""
+    n_vetos_act = sum(1 for v in vetos if v['activa'])
     cuerpo = (
-        "<h1>Reglas, correcciones y vetos — feedback al sistema</h1>" + aviso
-        + "<form class=alta method=post action='/reglas'>"
-        "<textarea name=texto placeholder='regla de negocio para la IA' required></textarea>"
+        css
+        + "<h1>Reglas, vetos y correcciones</h1>"
+        + "<p class=seccion-desc>Tres tipos de feedback al sistema. Las "
+        "<b>reglas</b> y <b>correcciones</b> van al prompt de Claude (tienen costo). "
+        "Los <b>vetos</b> son regex en cascada (gratis).</p>"
+        + aviso
+        # === SECCIÓN 1: REGLAS DE NEGOCIO ===
+        + f"<div class=seccion-titulo><h2>📋 Reglas de negocio</h2>"
+        f"<span class=badge>{len(reglas_)} activas</span>"
+        f"<span class='seccion-desc' style='margin:0'>· van al prompt de Claude (interpretativas)</span></div>"
+        + "<form class=alta method=post action='/reglas' style='margin-bottom:6px'>"
+        "<textarea name=texto placeholder='nueva regla de negocio para la IA' required></textarea>"
         "<button type=submit>Agregar regla</button></form>"
-        f"<h2>Reglas de negocio ({len(reglas_)}) — van al prompt</h2>" + tabla(reglas_)
-        + f"<h2>Vetos en cascada ({sum(1 for v in vetos if v['activa'])}) — regex, NO van al prompt</h2>"
-        "<p style='font-size:13px;color:#6b7689'>"
-        "Los vetos son patrones regex que la cascada aplica antes de Claude — descartan filas "
-        "no farma (sensidiscos, stent, agua oxigenada, etc.) sin gastar tokens. Editables aquí "
-        "sin deploy. Los <b>protegidos 🔒</b> solo el admin puede modificar.</p>"
+        + tabla(reglas_)
+        # === SECCIÓN 2: VETOS EN CASCADA ===
+        + f"<div class=seccion-titulo><h2>🛑 Vetos en cascada</h2>"
+        f"<span class=badge>{n_vetos_act} activos</span>"
+        f"<span class='seccion-desc' style='margin:0'>· regex sin costo, descartan antes de Claude</span></div>"
+        + "<p class=seccion-desc>"
+        "Patrones regex que la cascada aplica directamente. Descartan filas "
+        "no farma (sensidiscos, stent, agua oxigenada, etc.) <b>sin gastar tokens</b>. "
+        "Editables aquí, cambios aplican en ≤3 min sin deploy. Los <b>🔒 protegidos</b> "
+        "solo el admin puede modificar.</p>"
         + tabla_vetos(vetos)
-        + "<details style='margin-top:10px'><summary>Agregar nuevo veto</summary>"
-        + "<form class=alta method=post action='/reglas/veto' style='display:grid;gap:8px;max-width:700px'>"
-        "<input name=nombre placeholder='nombre corto (ej. shampoo_no_farma)' required maxlength=100>"
-        "<input name=regex_pattern placeholder='regex (ej. \\bshampoo\\b)' required>"
+        + "<details style='margin-top:14px'><summary style='cursor:pointer;font-weight:600'>"
+        "➕ Agregar nuevo veto</summary>"
+        + "<form class=alta-veto method=post action='/reglas/veto'>"
+        "<label>Nombre corto (sin espacios, ej. shampoo_no_farma)</label>"
+        "<input name=nombre placeholder='shampoo_no_farma' required maxlength=100>"
+        "<label>Regex (sintaxis Python, sin / al inicio/final)</label>"
+        "<input name=regex_pattern placeholder='\\bshampoo\\b' required>"
+        "<label>¿Dónde aplica?</label>"
         "<select name=aplica_a>"
-        "<option value='inicio_cascada'>inicio_cascada (descarta cualquier fila que matchee)</option>"
-        "<option value='regla_diccionario'>regla_diccionario (solo si match simple en regla)</option>"
+        "<option value='inicio_cascada'>inicio_cascada — descarta cualquier fila que matchee</option>"
+        "<option value='regla_diccionario'>regla_diccionario — solo si match simple en regla</option>"
         "<option value='modelo_pactivo'>modelo_pactivo</option>"
         "<option value='modelo_marcas'>modelo_marcas</option>"
         "</select>"
-        "<input name=pactivo_filtro placeholder='pactivo_filtro opcional (ej. Cinta Adhesiva Médica)'>"
-        "<input name=texto placeholder='razón / motivo (qué descarta)' required>"
+        "<label>Pactivo filtro (opcional — el veto solo dispara si el modelo predijo este pactivo)</label>"
+        "<input name=pactivo_filtro placeholder='ej. Cinta Adhesiva Médica'>"
+        "<label>Razón / motivo (qué descarta y por qué)</label>"
+        "<input name=texto placeholder='Ej: shampoo industrial, no es farma' required>"
         "<button type=submit>Agregar veto</button></form></details>"
-        + f"<h2>Errores corregidos — máxima prioridad ({len(corr)})</h2>"
+        # === SECCIÓN 3: CORRECCIONES ===
+        + f"<div class=seccion-titulo><h2>📝 Correcciones del equipo</h2>"
+        f"<span class=badge>{len(corr)}</span>"
+        f"<span class='seccion-desc' style='margin:0'>· errores ya corregidos, van al prompt con máxima prioridad</span></div>"
         + tabla_correcciones_por_dia(corr)
     )
     return _layout("Reglas", cuerpo, usuario=usuario)
