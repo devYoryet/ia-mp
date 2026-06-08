@@ -2983,25 +2983,33 @@ def reeditar_revisada(request: Request, log_id: int,
 
 
 @app.get("/reportes", response_class=HTMLResponse)
-def reportes(request: Request, dia: str = "") -> str:
-    """Lista de reportes diarios + reporte específico. Generados por
-    `reporte_diario.py` (cron 22:00 UTC / 18:00 Chile)."""
+def reportes(request: Request, dia: str = "", tipo: str = "diario") -> str:
+    """Reportes diarios (cron 22:00 UTC) + semanales (cron lunes 12:00 UTC)."""
     usuario = usuario_actual(request)
     if not usuario:
         return RedirectResponse("/login", status_code=303)
     from pathlib import Path
     rep_dir = Path("/app/reportes")
     rep_dir.mkdir(parents=True, exist_ok=True)
-    listados = sorted([f.stem.replace("reporte_", "")
-                       for f in rep_dir.glob("reporte_*.md")], reverse=True)
-    if not listados:
-        cuerpo = ("<h1>Reportes diarios</h1>"
-                  "<p>Aún no hay reportes. Se generan cada día a las 18:00 Chile.</p>"
-                  "<p>Forzar generación manual: "
-                  "<code>docker exec ia-mp-worker-1 python /app/reporte_diario.py --dia YYYY-MM-DD</code></p>")
+    diarios = sorted([f.stem.replace("reporte_", "")
+                      for f in rep_dir.glob("reporte_*.md")], reverse=True)
+    semanales = sorted([f.stem.replace("semanal_", "")
+                        for f in rep_dir.glob("semanal_*.md")], reverse=True)
+    if not diarios and not semanales:
+        cuerpo = ("<h1>Reportes</h1>"
+                  "<p>Aún no hay reportes. Diarios se generan 18:00 Chile; "
+                  "semanales lunes 09:00 Chile.</p>")
         return _layout("Reportes", cuerpo, usuario=usuario)
-    if dia and (rep_dir / f"reporte_{dia}.md").exists():
-        contenido = (rep_dir / f"reporte_{dia}.md").read_text()
+    # Decidir qué archivo abrir
+    archivo = None
+    if dia:
+        if tipo == "semanal":
+            p = rep_dir / f"semanal_{dia}.md"
+        else:
+            p = rep_dir / f"reporte_{dia}.md"
+        if p.exists(): archivo = p
+    if archivo:
+        contenido = archivo.read_text()
         # Render simple de Markdown a HTML — limitado pero suficiente
         import re as _re
         html = _e(contenido)
@@ -3028,13 +3036,31 @@ def reportes(request: Request, dia: str = "") -> str:
                 out_lines.append(ln)
         if en_tabla: out_lines.append("</table>")
         html = "\n".join(out_lines).replace("`", "")
-        nav = "  ·  ".join(
-            (f"<a href='/reportes?dia={d}'>{d}</a>" if d != dia else f"<b>{d}</b>")
-            for d in listados[:14])
-        cuerpo = f"<p>Días: {nav}</p><div class='reporte'>{html}</div>"
+        # Nav según tipo
+        if tipo == "semanal":
+            nav = "  ·  ".join(
+                (f"<a href='/reportes?dia={d}&tipo=semanal'>{d}</a>" if d != dia else f"<b>semana {d}</b>")
+                for d in semanales[:12])
+            otros = "<a href='/reportes'>← ver diarios</a>"
+        else:
+            nav = "  ·  ".join(
+                (f"<a href='/reportes?dia={d}'>{d}</a>" if d != dia else f"<b>{d}</b>")
+                for d in diarios[:14])
+            otros = "<a href='/reportes?tipo=semanal'>ver semanales →</a>"
+        cuerpo = (f"<p>{otros}</p><p>{nav}</p>"
+                  f"<div class='reporte'>{html}</div>")
+    elif tipo == "semanal":
+        items = "".join(f"<li><a href='/reportes?dia={d}&tipo=semanal'>semana del {d}</a></li>"
+                        for d in semanales[:30])
+        cuerpo = (f"<h1>Reportes semanales</h1>"
+                  f"<p><a href='/reportes'>← ver diarios</a></p>"
+                  f"<ul>{items or '<li><em>sin reportes semanales aún</em></li>'}</ul>")
     else:
-        items = "".join(f"<li><a href='/reportes?dia={d}'>{d}</a></li>" for d in listados[:30])
-        cuerpo = f"<h1>Reportes diarios</h1><ul>{items}</ul>"
+        items = "".join(f"<li><a href='/reportes?dia={d}'>{d}</a></li>"
+                        for d in diarios[:30])
+        cuerpo = (f"<h1>Reportes</h1>"
+                  f"<p><a href='/reportes?tipo=semanal'>ver semanales →</a></p>"
+                  f"<h2>Diarios</h2><ul>{items}</ul>")
     return _layout("Reportes", cuerpo, usuario=usuario)
 
 
