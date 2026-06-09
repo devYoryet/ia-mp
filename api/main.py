@@ -2998,7 +2998,8 @@ def reeditar_revisada(request: Request, log_id: int,
 
 @app.get("/reportes", response_class=HTMLResponse)
 def reportes(request: Request, dia: str = "", tipo: str = "diario") -> str:
-    """Reportes diarios (cron 22:00 UTC) + semanales (cron lunes 12:00 UTC)."""
+    """Reportes diarios (cron 22:00 UTC) + semanales (cron lunes 12:00 UTC)
+    + corregidas (cron 14:30 UTC = 10:30 Chile, feedback humano)."""
     usuario = usuario_actual(request)
     if not usuario:
         return RedirectResponse("/login", status_code=303)
@@ -3009,16 +3010,20 @@ def reportes(request: Request, dia: str = "", tipo: str = "diario") -> str:
                       for f in rep_dir.glob("reporte_*.md")], reverse=True)
     semanales = sorted([f.stem.replace("semanal_", "")
                         for f in rep_dir.glob("semanal_*.md")], reverse=True)
-    if not diarios and not semanales:
+    corregidas = sorted([f.stem.replace("corregidas_", "")
+                         for f in rep_dir.glob("corregidas_*.md")], reverse=True)
+    if not diarios and not semanales and not corregidas:
         cuerpo = ("<h1>Reportes</h1>"
-                  "<p>Aún no hay reportes. Diarios se generan 18:00 Chile; "
-                  "semanales lunes 09:00 Chile.</p>")
+                  "<p>Aún no hay reportes. Diarios 18:00 Chile · "
+                  "Corregidas 10:30 Chile · Semanales lunes 09:00 Chile.</p>")
         return _layout("Reportes", cuerpo, usuario=usuario)
     # Decidir qué archivo abrir
     archivo = None
     if dia:
         if tipo == "semanal":
             p = rep_dir / f"semanal_{dia}.md"
+        elif tipo == "corregidas":
+            p = rep_dir / f"corregidas_{dia}.md"
         else:
             p = rep_dir / f"reporte_{dia}.md"
         if p.exists(): archivo = p
@@ -3051,29 +3056,45 @@ def reportes(request: Request, dia: str = "", tipo: str = "diario") -> str:
         if en_tabla: out_lines.append("</table>")
         html = "\n".join(out_lines).replace("`", "")
         # Nav según tipo
+        tabs = ("<p><a href='/reportes'>📊 diarios</a>  ·  "
+                "<a href='/reportes?tipo=corregidas'>📋 corregidas</a>  ·  "
+                "<a href='/reportes?tipo=semanal'>📅 semanales</a></p>")
         if tipo == "semanal":
             nav = "  ·  ".join(
                 (f"<a href='/reportes?dia={d}&tipo=semanal'>{d}</a>" if d != dia else f"<b>semana {d}</b>")
                 for d in semanales[:12])
-            otros = "<a href='/reportes'>← ver diarios</a>"
+        elif tipo == "corregidas":
+            nav = "  ·  ".join(
+                (f"<a href='/reportes?dia={d}&tipo=corregidas'>{d}</a>" if d != dia else f"<b>{d}</b>")
+                for d in corregidas[:14])
         else:
             nav = "  ·  ".join(
                 (f"<a href='/reportes?dia={d}'>{d}</a>" if d != dia else f"<b>{d}</b>")
                 for d in diarios[:14])
-            otros = "<a href='/reportes?tipo=semanal'>ver semanales →</a>"
-        cuerpo = (f"<p>{otros}</p><p>{nav}</p>"
+        cuerpo = (f"{tabs}<p>{nav}</p>"
                   f"<div class='reporte'>{html}</div>")
     elif tipo == "semanal":
         items = "".join(f"<li><a href='/reportes?dia={d}&tipo=semanal'>semana del {d}</a></li>"
                         for d in semanales[:30])
         cuerpo = (f"<h1>Reportes semanales</h1>"
-                  f"<p><a href='/reportes'>← ver diarios</a></p>"
+                  f"<p><a href='/reportes'>📊 diarios</a>  ·  "
+                  f"<a href='/reportes?tipo=corregidas'>📋 corregidas</a></p>"
                   f"<ul>{items or '<li><em>sin reportes semanales aún</em></li>'}</ul>")
+    elif tipo == "corregidas":
+        items = "".join(f"<li><a href='/reportes?dia={d}&tipo=corregidas'>{d}</a></li>"
+                        for d in corregidas[:30])
+        cuerpo = (f"<h1>📋 Reportes de CORREGIDAS</h1>"
+                  f"<p><em>Feedback humano del día anterior: rebajes, rescates, "
+                  f"correcciones de pactivo y efectividad de vetos.</em></p>"
+                  f"<p><a href='/reportes'>📊 diarios</a>  ·  "
+                  f"<a href='/reportes?tipo=semanal'>📅 semanales</a></p>"
+                  f"<ul>{items or '<li><em>sin reportes corregidas aún (cron 10:30 Chile)</em></li>'}</ul>")
     else:
         items = "".join(f"<li><a href='/reportes?dia={d}'>{d}</a></li>"
                         for d in diarios[:30])
         cuerpo = (f"<h1>Reportes</h1>"
-                  f"<p><a href='/reportes?tipo=semanal'>ver semanales →</a></p>"
+                  f"<p><a href='/reportes?tipo=corregidas'>📋 corregidas</a>  ·  "
+                  f"<a href='/reportes?tipo=semanal'>📅 semanales</a></p>"
                   f"<h2>Diarios</h2><ul>{items}</ul>")
     return _layout("Reportes", cuerpo, usuario=usuario)
 
