@@ -23,6 +23,11 @@ services:
     image: clasificador-ia:latest
     command: python worker.py
     env_file: .env
+    # /app/reportes: salida de reporte_diario / reporte_semanal /
+    # reporte_corregidas. Compartido con panel (que los expone vía /reportes)
+    # y persistido en el host para sobrevivir recreates de container.
+    volumes:
+      - /opt/ia-mp/reportes:/app/reportes
     restart: unless-stopped
     logging: *log
 
@@ -38,9 +43,11 @@ services:
     # /app/pending: outbox de aprobaciones que NO pudieron escribirse a clásico
     # (BD caída) — el JSON queda en disco hasta que cron/botón lo reintenta.
     # NADA de lo que el revisor aprueba se pierde aunque MySQL esté caído.
+    # /app/reportes: mismos archivos que escribe el worker — el panel los lista.
     volumes:
       - /var/www/html/gestor_oc/storage/app/temp:/host/storage/temp
       - /opt/ia-mp/pending:/app/pending
+      - /opt/ia-mp/reportes:/app/reportes
     environment:
       LEGACY_TEMP_DIR: /host/storage/temp
     # www-data del host (UID:GID 33:33) es el dueño-de-grupo del directorio
