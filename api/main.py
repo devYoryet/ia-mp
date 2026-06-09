@@ -183,6 +183,17 @@ def _catalogo(forzar: bool = False) -> dict:
                 f"WHERE pactivo IS NOT NULL AND pactivo<>''"
             )
             filas += list(cur.fetchall())
+            # pactivos_extra: catálogo manual (Carolina/admin). No traen comp/pres
+            # propias —se completan al aprobar la 1ª fila—, pero DEBEN aparecer en
+            # el autocompletado y dar encontrado:True para poder usarse en una fila.
+            # Sin esto, un pactivo recién agregado al CRUD no se puede asignar.
+            try:
+                cur.execute(
+                    "SELECT pactivo p, '' c, '' m FROM pactivos_extra WHERE activo=1"
+                )
+                filas += list(cur.fetchall())
+            except Exception:  # noqa: BLE001
+                pass  # entornos sin la tabla todavía
     finally:
         conn.close()
     for r in filas:
@@ -2869,6 +2880,12 @@ def pactivos_extra_post(
                 )
                 msg = f"Pactivo '{pact}' agregado. Worker lo recogerá en <3 min."
         conn.commit()
+        # Refrescar el catálogo del panel YA: así el pactivo aparece en el
+        # autocompletado y en /api/catalogo sin esperar el TTL de 8h.
+        try:
+            _catalogo(forzar=True)
+        except Exception:  # noqa: BLE001
+            pass
     except Exception as exc:  # noqa: BLE001
         msg = f"Error: {exc}"
     finally:
@@ -2891,6 +2908,10 @@ def pactivos_extra_desactivar(request: Request, id_: int):
                 (datetime.now(), por, id_),
             )
         conn.commit()
+        try:
+            _catalogo(forzar=True)
+        except Exception:  # noqa: BLE001
+            pass
         msg = f"Pactivo id={id_} desactivado. Worker lo verá en <3 min."
     except Exception as exc:  # noqa: BLE001
         msg = f"Error: {exc}"
