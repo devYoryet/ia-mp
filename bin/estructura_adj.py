@@ -228,9 +228,6 @@ def ejecutar_migracion():
             
             print("[OK] VINCULO CON HISTORICO SINCRONIZADO EXITOSAMENTE.")
 
-            conn.execute(text("CREATE INDEX idx_licitaciones_tmp ON tmp_vinculo_licitaciones(Licitacion)"))
-            print("[OK] VINCULO CON HISTORICO CREADO Y GUARDADO EXITOSAMENTE.")
-
             # ==============================================================================
             # ⚠️ ADVERTENCIA DE RENDIMIENTO PARA QUIEN EJECUTE EL SCRIPT:
             # ==============================================================================
