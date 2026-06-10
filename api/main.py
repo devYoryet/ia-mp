@@ -939,7 +939,7 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
              estado: str = "pendientes", rango: str = "",
              desde: str = "", hasta: str = "",
              busqueda: str = "", licitacion: str = "",
-             tipo_rev: str = "") -> str:
+             tipo_rev: str = "", rev_desde: str = "", rev_hasta: str = "") -> str:
     usuario = usuario_actual(request)
     es_admin = _es_admin(usuario)
     hoja = max(1, hoja)
@@ -951,9 +951,14 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
     # que muestra el input desde el primer load (sin esperar a "aplicar").
     rango = ""
     from datetime import date as _date_d, timedelta as _td_d
-    if not desde:
+    # Cuando el enlace trae un filtro por FECHA DE REVISIÓN (rev_desde/rev_hasta,
+    # p.ej. desde el reporte diario → "ver los errores del día"), NO forzamos el
+    # rango default de fecha de publicación: si no, ambos filtros se cruzarían y
+    # se perderían errores cuya publicación es anterior a ayer.
+    _hay_rev_filtro = bool(rev_desde or rev_hasta)
+    if not desde and not _hay_rev_filtro:
         desde = f"{(_date_d.today() - _td_d(days=1)).isoformat()}T18:30"
-    if not hasta:
+    if not hasta and not _hay_rev_filtro:
         hasta = f"{_date_d.today().isoformat()}T18:30"
     cond = [_ESTADOS[estado]]
     args: list = []
@@ -997,6 +1002,16 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
     if _h:
         cond.append(f"{_SQL_PUB_FECHA} <= %s")
         args.append(_h)
+    # Fecha de REVISIÓN (revisado_en) — para enlaces del reporte diario que
+    # llevan exactamente a los casos que el humano revisó/corrigió ese día.
+    _rd = _norm_fecha(rev_desde, fin=False)
+    _rh = _norm_fecha(rev_hasta, fin=True)
+    if _rd:
+        cond.append("revisado_en >= %s")
+        args.append(_rd)
+    if _rh:
+        cond.append("revisado_en <= %s")
+        args.append(_rh)
     # Búsqueda de texto en la descripción (LIKE %X%)
     if busqueda:
         cond.append("descripcion LIKE %s")
@@ -1128,7 +1143,7 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
         cur = {"tabla": tabla, "tipo": tipo, "metodo": metodo,
                "conf": conf, "rango": rango, "desde": desde, "hasta": hasta,
                "busqueda": busqueda, "licitacion": licitacion,
-               "tipo_rev": tipo_rev,
+               "tipo_rev": tipo_rev, "rev_desde": rev_desde, "rev_hasta": rev_hasta,
                "estado": estado if estado != "pendientes" else "",
                "por_hoja": str(por_hoja) if por_hoja != POR_HOJA_DEFAULT else ""}
         cur[clave] = valor
@@ -3017,8 +3032,153 @@ def reeditar_revisada(request: Request, log_id: int,
         status_code=303)
 
 
+def _reporte_diario_html(rep: dict, dia: str) -> str:
+    """Vista rica y explicada del reporte diario, desde el JSON estructurado.
+    El foco: que se entienda QUÉ pasó y DÓNDE están los errores, con enlaces
+    directos a /revision filtrado a esos casos (por fecha de revisión)."""
+    p = rep.get("panel") or {}
+    total = int(p.get("total") or 0)
+    acuerdo = int(p.get("acuerdo") or 0)
+    fp = int(p.get("fp") or 0)
+    fn = int(p.get("fn") or 0)
+    cambio = int(p.get("cambio_pact") or 0)
+    errores = fp + fn + cambio
+    pct_ok = (acuerdo / total * 100) if total else 0.0
+    cst = rep.get("costo") or {}
+    usd = float(cst.get("usd") or 0)
+    catalogo = rep.get("pactivos_catalogo") or 0
+    gen = rep.get("generado_en") or ""
+
+    # Enlaces a los casos reales, filtrados por FECHA DE REVISIÓN del día.
+    rd, rh = f"{dia}T00:00", f"{dia}T23:59"
+    base = f"estado=revisadas&rev_desde={rd}&rev_hasta={rh}"
+    link_todos = f"/revision?{base}&tipo_rev=corregidas"
+    link_fp = f"/revision?{base}&tipo_rev=descartadas"
+    link_fn = f"/revision?{base}&tipo_rev=corregidas&tipo=descarte"
+    link_conf = f"/revision?{base}&tipo_rev=corregidas&tipo=interes"
+
+    def _card(n, l, color=""):
+        st = f" style='color:{color}'" if color else ""
+        return f"<div class=card><div class=n{st}>{n}</div><div class=l>{_e(l)}</div></div>"
+
+    def _tabla(titulo, expl, cols, filas, render):
+        if not filas:
+            return ""
+        ths = "".join(f"<th>{_e(c)}</th>" for c in cols)
+        trs = "".join("<tr>" + render(r) + "</tr>" for r in filas)
+        return (f"<h2>{_e(titulo)}</h2>"
+                f"<p class='rexpl'>{expl}</p>"
+                f"<table><tr>{ths}</tr>{trs}</table>")
+
+    css = """
+<style>
+.rexpl { font-size:13px; color:#6b7689; margin:2px 0 8px; }
+.rep-banner { background:#eaf2fb; border:1px solid #c3d6ef; border-left:5px solid #2f6fb0;
+  border-radius:8px; padding:12px 16px; font-size:13.5px; margin-bottom:16px; }
+.rep-banner b { color:#1d2330; }
+.err-box { background:#fff4f2; border:2px solid #e0b4ad; border-left:6px solid #c0392b;
+  border-radius:10px; padding:14px 18px; margin:6px 0 22px; }
+.err-box h2 { color:#c0392b; margin:0 0 4px; font-size:16px; }
+.err-box .sub { font-size:13px; color:#7c3a30; margin-bottom:12px; }
+.err-links { display:flex; flex-direction:column; gap:8px; }
+.err-links a { display:flex; justify-content:space-between; align-items:center;
+  background:#fff; border:1px solid #e0b4ad; border-radius:8px; padding:10px 14px;
+  text-decoration:none; color:#1d2330; font-size:14px; }
+.err-links a:hover { background:#fde9e6; border-color:#c0392b; }
+.err-links a .cnt { font-weight:700; color:#c0392b; font-size:15px; }
+.err-links a.todos { background:#c0392b; color:#fff; border-color:#a5281c; }
+.err-links a.todos:hover { background:#a5281c; }
+.err-links a.todos .cnt { color:#fff; }
+td code, th code { background:#f3f6fa; padding:1px 5px; border-radius:4px; font-size:12.5px; }
+.rep-md td:last-child { color:#44506a; font-size:12.5px; }
+</style>
+"""
+
+    out = [css]
+    out.append(
+        f"<h1>📊 Reporte del día — {_e(dia)}</h1>"
+        f"<div class=rep-banner>ℹ️ <b>Qué es esto:</b> resumen de lo que el "
+        f"clasificador IA propuso ese día y <b>en qué se equivocó</b> (según lo "
+        f"que el revisor humano corrigió en el panel). Para <b>ver y revisar los "
+        f"errores</b>, usá los botones rojos de abajo. "
+        f"<span style='color:#6b7689'>Generado {_e(gen[:19])} · catálogo {catalogo} pactivos.</span></div>"
+    )
+
+    # Tarjetas resumen
+    out.append("<div class=cards>")
+    out.append(_card(f"{total:,}".replace(",", "."), "revisadas en total"))
+    out.append(_card(f"{errores:,}".replace(",", "."), "ERRORES (humano corrigió)", "#c0392b"))
+    out.append(_card(f"{pct_ok:.1f}%", "acierto global"))
+    out.append(_card(f"${usd:.2f}", "costo Claude del día"))
+    out.append("</div>")
+
+    # Bloque de ERRORES con enlaces
+    out.append(
+        "<div class=err-box>"
+        "<h2>🔴 ¿Dónde están los errores?</h2>"
+        "<div class=sub>Cada botón abre la cola <code>/revision</code> filtrada "
+        "exactamente a esos casos (por fecha de revisión del día). Ahí podés ver "
+        "la descripción completa y re-corregir si hace falta.</div>"
+        "<div class=err-links>"
+        f"<a class=todos href='{link_todos}'><span>▶ Ver TODOS los errores del día</span>"
+        f"<span class=cnt>{errores}</span></a>"
+        f"<a href='{link_fp}'><span>FP · la IA dijo <b>interés</b> y en realidad era descarte</span>"
+        f"<span class=cnt>{fp}</span></a>"
+        f"<a href='{link_fn}'><span>FN · la IA <b>descartó</b> algo que sí era de interés</span>"
+        f"<span class=cnt>{fn}</span></a>"
+        f"<a href='{link_conf}'><span>Confusión · acertó el interés pero <b>erró el pactivo</b></span>"
+        f"<span class=cnt>{cambio}</span></a>"
+        "</div></div>"
+    )
+
+    # Detalle: tablas
+    out.append(_tabla(
+        "Top FP — interés de más", "La IA marcó interés pero el humano descartó. "
+        "Si se repite un pactivo/vía, conviene un veto o ajuste de regla.",
+        ["n", "IA propuso", "vía", "ejemplo"],
+        rep.get("top_fp") or [],
+        lambda r: f"<td>{r.get('n')}</td><td><code>{_e(r.get('p'))}</code></td>"
+                  f"<td><code>{_e(r.get('metodo'))}</code></td><td>{_e((r.get('ej') or '')[:65])}</td>"))
+
+    out.append(_tabla(
+        "Top FN — descartes que sí servían", "La IA descartó algo que el humano "
+        "rescató como de interés. Son los que más duele perder.",
+        ["n", "pactivo humano", "vía descarte", "ejemplo"],
+        rep.get("top_fn") or [],
+        lambda r: f"<td>{r.get('n')}</td><td><code>{_e(r.get('hu'))}</code></td>"
+                  f"<td><code>{_e(r.get('metodo'))}</code></td><td>{_e((r.get('ej') or '')[:65])}</td>"))
+
+    out.append(_tabla(
+        "Confusiones de pactivo", "Acertó que era de interés pero asignó el "
+        "principio activo equivocado.",
+        ["n", "IA dijo", "humano corrigió a", "ejemplo"],
+        rep.get("top_confusiones") or [],
+        lambda r: f"<td>{r.get('n')}</td><td><code>{_e(r.get('ia'))}</code></td>"
+                  f"<td><code>{_e(r.get('hu'))}</code></td><td>{_e((r.get('ej') or '')[:65])}</td>"))
+
+    crud = [r for r in (rep.get("candidatos_crud") or []) if (r.get("n") or 0) >= 2]
+    out.append(_tabla(
+        "Candidatos a catálogo nuevo", "Pactivos que el humano usó (≥2 veces en "
+        "30 días) y NO están en el catálogo activo. Posibles altas vía CRUD pactivos_extra.",
+        ["n", "pactivo", "ejemplo"],
+        crud[:15],
+        lambda r: f"<td>{r.get('n')}</td><td><code>{_e(r.get('p'))}</code></td>"
+                  f"<td>{_e((r.get('ej') or '')[:65])}</td>"))
+
+    out.append(_tabla(
+        "Rendimiento por método (vía)", "Cuántas resolvió cada rama de la cascada "
+        "y cuántas el humano marcó como error.",
+        ["método", "n", "ok", "err"],
+        rep.get("por_metodo") or [],
+        lambda r: f"<td><code>{_e(r.get('metodo'))}</code></td><td>{r.get('n')}</td>"
+                  f"<td>{r.get('ok')}</td><td>{r.get('err')}</td>"))
+
+    out.append(f"<p style='margin-top:18px'><a href='/reportes?dia={_e(dia)}&fmt=md'>⬇ ver versión .md cruda</a></p>")
+    return "\n".join(out)
+
+
 @app.get("/reportes", response_class=HTMLResponse)
-def reportes(request: Request, dia: str = "", tipo: str = "diario") -> str:
+def reportes(request: Request, dia: str = "", tipo: str = "diario", fmt: str = "") -> str:
     """Reportes diarios (cron 22:00 UTC) + semanales (cron lunes 12:00 UTC)
     + corregidas (cron 14:30 UTC = 10:30 Chile, feedback humano)."""
     usuario = usuario_actual(request)
@@ -3038,7 +3198,30 @@ def reportes(request: Request, dia: str = "", tipo: str = "diario") -> str:
                   "<p>Aún no hay reportes. Diarios 18:00 Chile · "
                   "Corregidas 10:30 Chile · Semanales lunes 09:00 Chile.</p>")
         return _layout("Reportes", cuerpo, usuario=usuario)
-    # Decidir qué archivo abrir
+
+    tabs = ("<p><a href='/reportes'>📊 diarios</a>  ·  "
+            "<a href='/reportes?tipo=corregidas'>📋 corregidas</a>  ·  "
+            "<a href='/reportes?tipo=semanal'>📅 semanales</a></p>")
+
+    # ---- DIARIO: vista rica desde JSON (default = último día). fmt=md fuerza
+    # el render markdown crudo (fallback / descarga visual).
+    if tipo == "diario":
+        if not dia and diarios:
+            dia = diarios[0]
+        nav = "  ·  ".join(
+            (f"<a href='/reportes?dia={d}'>{d}</a>" if d != dia else f"<b>{d}</b>")
+            for d in diarios[:14])
+        json_p = rep_dir / f"reporte_{dia}.json"
+        if dia and fmt != "md" and json_p.exists():
+            import json as _json
+            try:
+                rep = _json.loads(json_p.read_text())
+                cuerpo = f"{tabs}<p>{nav}</p>" + _reporte_diario_html(rep, dia)
+                return _layout("Reportes", cuerpo, usuario=usuario)
+            except Exception:  # noqa: BLE001 — si el JSON falla, cae al markdown
+                pass
+
+    # Decidir qué archivo .md abrir (semanal/corregidas, o diario con fmt=md)
     archivo = None
     if dia:
         if tipo == "semanal":
