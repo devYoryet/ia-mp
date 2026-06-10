@@ -9,7 +9,7 @@ import time
 import gc
 import unicodedata
 from bs4 import BeautifulSoup
-from sqlalchemy import text
+from sqlalchemy import text, VARCHAR
 from urllib.parse import quote_plus
 from datetime import timedelta
 from datetime import datetime
@@ -221,7 +221,12 @@ def ejecutar_migracion():
             df_historico = pd.read_sql(query_historico, engine_clasico_hist)
 
             print("[INFO] SUBIENDO PUENTE DE DATOS AL PRIME...")
-            df_historico.to_sql('tmp_vinculo_licitaciones', engine, if_exists='replace', index=False)
+            # Forzar VARCHAR: con if_exists='replace' pandas crearia Licitacion como
+            # TEXT y MySQL no puede indexar TEXT sin longitud de clave (error 1170).
+            df_historico.to_sql(
+                'tmp_vinculo_licitaciones', engine, if_exists='replace', index=False,
+                dtype={'Licitacion': VARCHAR(100), 'Tiempo_contrato': VARCHAR(255)},
+            )
 
             with engine.begin() as conn:
                 conn.execute(text("CREATE INDEX idx_licitaciones_tmp ON tmp_vinculo_licitaciones(Licitacion)"))
