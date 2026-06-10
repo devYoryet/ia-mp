@@ -57,7 +57,12 @@ def get_engine_by_server(nombre_bd, servidor_objetivo):
     return create_engine(conn_str, pool_recycle=3600)
 
 engine = get_engine_by_server("analisis_precios", "prime")
-engine_clasico = get_engine_by_server("licitaciones_diarias_total", "clasico")
+# adquisiciones_validadas y la base espejo (`Base`) viven en analisis_precios del
+# clasico: ese es el engine para clonar estructura y volcar los validados.
+engine_clasico = get_engine_by_server("analisis_precios", "clasico")
+# El historico de tiempos de contrato (Licitaciones_diarias_practica) esta en
+# otra BD del clasico: se lee solo desde aqui.
+engine_clasico_hist = get_engine_by_server("licitaciones_diarias_total", "clasico")
 
 def unir_dataframes(df_principal, df_nuevo):
     if PANDAS_VERSION >= 2:
@@ -213,7 +218,7 @@ def ejecutar_migracion():
                 WHERE Tiempo_contrato IS NOT NULL 
                 AND Tiempo_contrato NOT IN ('0', '', 'nan')
             """
-            df_historico = pd.read_sql(query_historico, engine_clasico)
+            df_historico = pd.read_sql(query_historico, engine_clasico_hist)
 
             print("[INFO] SUBIENDO PUENTE DE DATOS AL PRIME...")
             df_historico.to_sql('tmp_vinculo_licitaciones', engine, if_exists='replace', index=False)
