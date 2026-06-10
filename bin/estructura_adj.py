@@ -384,9 +384,13 @@ def scraping_tiempo_contrato(engine_prime, engine_clasico):
                         valor_web = '0'
                         mensaje_log = "NO DISPONIBLE (Marcado como 0 confirmado)"
                         
+                    # MySQL 5.7 no tiene REGEXP_REPLACE: extraemos los digitos en
+                    # Python y los pasamos como :num (string solo-digitos).
+                    num = re.sub(r'[^0-9]', '', valor_web) or '0'
+
                     with engine.begin() as conn_upd:
                         sql_web = text(f"""
-                            UPDATE {TABLA_DESTINO} 
+                            UPDATE {TABLA_DESTINO}
                             SET Tiempo_contrato = :t,
                                 finDeContrato = CASE 
                                     WHEN :t = '0' THEN FechaSQL
@@ -397,7 +401,7 @@ def scraping_tiempo_contrato(engine_prime, engine_clasico):
                                         OR :t LIKE '%Horas%'
                                         OR :t LIKE '%HORA%'
                                         OR :t LIKE '%HORAS%'
-                                        THEN DATE_ADD(FechaSQL, INTERVAL CAST(REGEXP_REPLACE(:t, '[^0-9]', '') AS UNSIGNED) HOUR)
+                                        THEN DATE_ADD(FechaSQL, INTERVAL CAST(:num AS UNSIGNED) HOUR)
 
                                     WHEN :t LIKE '%dia%' 
                                         OR :t LIKE '%Dia%' 
@@ -411,7 +415,7 @@ def scraping_tiempo_contrato(engine_prime, engine_clasico):
                                         OR :t LIKE '%DÍA%'
                                         OR :t LIKE '%DIAS%'
                                         OR :t LIKE '%DÍAS%'
-                                        THEN DATE_ADD(FechaSQL, INTERVAL CAST(REGEXP_REPLACE(:t, '[^0-9]', '') AS UNSIGNED) DAY)
+                                        THEN DATE_ADD(FechaSQL, INTERVAL CAST(:num AS UNSIGNED) DAY)
 
                                     WHEN :t LIKE '%semana%' 
                                         OR :t LIKE '%Semana%' 
@@ -419,7 +423,7 @@ def scraping_tiempo_contrato(engine_prime, engine_clasico):
                                         OR :t LIKE '%Semanas%'
                                         OR :t LIKE '%SEMANA%'
                                         OR :t LIKE '%SEMANAS%'
-                                        THEN DATE_ADD(FechaSQL, INTERVAL (CAST(REGEXP_REPLACE(:t, '[^0-9]', '') AS UNSIGNED) * 7) DAY)
+                                        THEN DATE_ADD(FechaSQL, INTERVAL (CAST(:num AS UNSIGNED) * 7) DAY)
                                     
                                     WHEN :t LIKE '%mes%' 
                                         OR :t LIKE '%Mes%' 
@@ -427,7 +431,7 @@ def scraping_tiempo_contrato(engine_prime, engine_clasico):
                                         OR :t LIKE '%Meses%'
                                         OR :t LIKE '%MES%'
                                         OR :t LIKE '%MESES%'
-                                        THEN DATE_ADD(FechaSQL, INTERVAL CAST(REGEXP_REPLACE(:t, '[^0-9]', '') AS UNSIGNED) MONTH)
+                                        THEN DATE_ADD(FechaSQL, INTERVAL CAST(:num AS UNSIGNED) MONTH)
                                                                     
                                     WHEN :t LIKE '%año%' 
                                         OR :t LIKE '%ano%' 
@@ -442,7 +446,7 @@ def scraping_tiempo_contrato(engine_prime, engine_clasico):
                                         OR :t LIKE '%AÑOS%'
                                         OR :t LIKE '%ANOS%'
 
-                                        THEN DATE_ADD(FechaSQL, INTERVAL CAST(REGEXP_REPLACE(:t, '[^0-9]', '') AS UNSIGNED) YEAR)
+                                        THEN DATE_ADD(FechaSQL, INTERVAL CAST(:num AS UNSIGNED) YEAR)
                                         
                                     ELSE finDeContrato
                                 END
@@ -450,10 +454,10 @@ def scraping_tiempo_contrato(engine_prime, engine_clasico):
                             AND Tiempo_contrato IS NULL
                         """)
 
-                        conn_upd.execute(sql_web, {"t": valor_web, "id": id_lic})
+                        conn_upd.execute(sql_web, {"t": valor_web, "num": num, "id": id_lic})
 
                     with engine_prime.begin() as conn_upd:
-                        conn_upd.execute(sql_web, {"t": valor_web, "id": id_lic})
+                        conn_upd.execute(sql_web, {"t": valor_web, "num": num, "id": id_lic})
 
                     try:
                         df_fila = pd.read_sql(f"SELECT * FROM {TABLA_DESTINO} WHERE Adquisicion = '{id_lic}'", engine_prime)
