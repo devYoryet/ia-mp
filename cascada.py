@@ -743,13 +743,12 @@ def _clasificar_fila_impl(
         # Veto puntual: el modelo sobre-asigna 'Cinta Adhesiva Médica' a cintas
         # de oficina/ferretería/embalaje. Si la glosa trae esas señales, se deja
         # que la cascada siga (modelo_descarte → Claude con la regla restrictiva).
-        if (normalizar(pact_pred) == normalizar("Cinta Adhesiva Médica")
-                and VETO_CINTA_NO_MEDICA.search(descripcion or "")):
-            pact_pred = None
-        # Aguja de insulina con glosa "aguja hipodérmica" — son cosas distintas
-        # (calibre/uso). Caso medido 06-04: 18 FP.
-        elif (normalizar(pact_pred) == normalizar("Aguja de insulina")
-              and VETO_AGUJA_HIPODERMICA_NO_INSULINA.search(descripcion or "")):
+        # Vetos dinámicos de la rama modelo_pactivo (BD, editables en /reglas;
+        # fallback hardcoded). Evalúa pactivo_filtro: cinta no-médica, aguja
+        # no-insulina (regla solo-insulina id=1388), cinta transparente, etc.
+        # Si dispara → se anula la predicción y la cascada sigue
+        # (modelo_descarte → Claude). Antes esto era hardcode cinta/aguja.
+        if _veto_dinamico_dispara("modelo_pactivo", pact_pred, descripcion or ""):
             pact_pred = None
         # Veto SUFIJO COMPUESTO: si el modelo predice un pactivo SIMPLE (sin
         # guión) pero la glosa indica compuesto (D, Plus, HCT, dosis dual X/Y),
@@ -787,18 +786,10 @@ def _clasificar_fila_impl(
         if (pact_m
                 and normalizar(pact_m) not in {normalizar(p) for p in PACTIVOS_NO_MATCH_DIRECTO}
                 and normalizar(pact_m) in pactivos_norm):
-            # Mismo veto Cinta Adhesiva que aplica al modelo_pactivo
-            if (normalizar(pact_m) == normalizar("Cinta Adhesiva Médica")
-                    and VETO_CINTA_NO_MEDICA.search(descripcion or "")):
-                pact_m = None
-            # Aguja de insulina con glosa "aguja hipodérmica" — son cosas
-            # distintas (calibre/uso). Caso medido 06-04: 18 FP. Ampliado
-            # 2026-06-08: "AGUJA GRIPPER" + "AGUJA 23GX1 1/4 DESCH" tampoco
-            # son aguja de insulina.
-            elif (normalizar(pact_m) == normalizar("Aguja de insulina")
-                  and (VETO_AGUJA_HIPODERMICA_NO_INSULINA.search(descripcion or "")
-                       or re.search(r"\b(?:gripper|desech|hipoderm)\b",
-                                    descripcion or "", re.IGNORECASE))):
+            # Vetos dinámicos de la rama modelo_marcas (BD; cinta no-médica,
+            # aguja no-insulina, cinta transparente, etc.). Evalúa pactivo_filtro.
+            # Mismo conjunto que modelo_pactivo. Antes era hardcode cinta/aguja.
+            if _veto_dinamico_dispara("modelo_marcas", pact_m, descripcion or ""):
                 pact_m = None
             # 'Alargador Venoso' o 'Alargador Arterial' con glosa de CATETER —
             # son catéteres, no alargadores. Caso medido 2026-06-08: 5 FP
