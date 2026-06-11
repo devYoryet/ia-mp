@@ -385,6 +385,38 @@ def _vetos_fallback_inicio() -> list:
     ]
 
 
+def _fallback_por_rama() -> dict:
+    """Fallback hardcoded de vetos POR RAMA — se usa SOLO si la BD de vetos no
+    cargó (_VETOS_CACHE is None). La fuente normal es la BD
+    (`clasificador_ia_reglas` tipo='veto'), editable desde /reglas. Espeja las
+    constantes que las ramas aplicaban hardcoded, para que una caída de BD no
+    deje a las ramas sin protección."""
+    cinta = ("cinta_no_medica", VETO_CINTA_NO_MEDICA, "Cinta Adhesiva Médica",
+             "Cinta de oficina/ferretería/impresora — no es Cinta Adhesiva Médica.")
+    aguja = ("aguja_hipodermica_no_insulina", VETO_AGUJA_HIPODERMICA_NO_INSULINA,
+             "Aguja de insulina", "Aguja hipodérmica/gripper — no es aguja de insulina.")
+    return {"modelo_pactivo": [cinta, aguja], "modelo_marcas": [cinta, aguja], "claude": []}
+
+
+_FALLBACK_POR_RAMA = _fallback_por_rama()
+
+
+def _veto_dinamico_dispara(rama: str, pactivo_pred: "str | None", descripcion: str):
+    """¿Algún veto dinámico de `rama` veta esta predicción? Evalúa `pactivo_filtro`
+    (si está seteado, el veto solo dispara cuando el pactivo predicho coincide) y
+    el regex contra la descripción. Devuelve (nombre, razon) o None.
+
+    Fuente: BD (vetos con `aplica_a` que incluye la rama). Fallback hardcoded por
+    rama si la BD no cargó. Cierra los huecos H2/H4/H5: las ramas (incl. claude)
+    ahora aplican los vetos de la tabla y respetan pactivo_filtro."""
+    for nombre, regex, pfiltro, razon in _vetos_para_rama(rama, _FALLBACK_POR_RAMA.get(rama, [])):
+        if pfiltro and normalizar(pfiltro) != normalizar(pactivo_pred or ""):
+            continue
+        if regex.search(descripcion or ""):
+            return nombre, razon
+    return None
+
+
 def clasificar_fila(
     tabla: str,
     fila: dict,
@@ -827,6 +859,21 @@ def _clasificar_fila_impl(
         descripcion or "", titulo or "", vinculos or "", taxonomia, ejemplos,
         candidatos=candidatos, marcas_texto=marcas_texto,
     )
+    # VETO en la rama claude (cierra H5: antes claude NO pasaba por ningún veto,
+    # y es la rama que más FP genera). Aplica los vetos tipo='veto' cuyo
+    # `aplica_a` incluye 'claude' (editables desde /reglas), respetando
+    # `pactivo_filtro`. Si dispara → descarte, conservando el costo ya incurrido
+    # de la llamada a Claude.
+    if c.interes == 1 and c.pactivo:
+        _v = _veto_dinamico_dispara("claude", c.pactivo, descripcion or "")
+        if _v:
+            return Resultado(
+                interes=0, pactivo=None, composicion=None, presentacion=None,
+                confianza=float(c.confianza), metodo=f"veto_{_v[0]}", razon=_v[1],
+                costo_usd=uso.costo_usd, tokens_in=uso.tokens_in,
+                tokens_out=uso.tokens_out, cache_read=uso.cache_read,
+                cache_write=uso.cache_write,
+            )
     comp, pres = c.composicion, c.presentacion
     if c.interes == 1:
         # Una vez que Claude propone un pactivo, sus comp/pres dejan de ser
