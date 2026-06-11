@@ -2416,6 +2416,34 @@ def estadisticas_json(tabla: str = "compra_agil", dias: int = 14):
 
 
 # ----------------------------------------------------------------- Reglas ---
+_VETO_FIRES_CACHE = {"ts": 0.0, "data": {}}
+
+
+def _veto_fires(dias: int = 7) -> dict:
+    """Cuántas veces disparó cada veto en los últimos `dias` (cuenta
+    metodo='veto_<nombre>'). Mide los vetos de DESCARTE DURO (inicio_cascada y
+    claude, que dejan metodo=veto_). Los por-rama (modelo/regla) ANULAN la
+    predicción y la cascada sigue → no dejan metodo=veto_, no se miden así (su
+    efecto se ve en el reporte agregado). Cache 10 min — query liviano (GROUP BY)."""
+    import time as _t
+    ahora = _t.time()
+    c = _VETO_FIRES_CACHE
+    if c["data"] and ahora - c["ts"] < 600:
+        return c["data"]
+    out: dict = {}
+    try:
+        rows = _query(
+            "SELECT metodo, COUNT(*) n FROM clasificador_ia_log "
+            "WHERE metodo LIKE 'veto\\_%' AND creado_en >= (NOW() - INTERVAL %s DAY) "
+            "GROUP BY metodo", (dias,))
+        for r in rows:
+            out[(r["metodo"] or "")[5:]] = r["n"]  # quita el prefijo 'veto_'
+    except Exception:  # noqa: BLE001
+        out = {}
+    c["ts"], c["data"] = ahora, out
+    return out
+
+
 @app.get("/reglas", response_class=HTMLResponse)
 def reglas(request: Request, msg: str = "") -> str:
     usuario = usuario_actual(request)
@@ -2515,6 +2543,19 @@ def reglas(request: Request, msg: str = "") -> str:
     except Exception:
         vetos = []
     es_admin = _es_admin(usuario)
+    fires = _veto_fires()  # disparos por veto (7d) — solo descarte duro
+
+    def _badge_fires(r) -> str:
+        rama = (r["aplica_a"] or "inicio_cascada")
+        n = fires.get(r["nombre"])
+        duro = ("inicio_cascada" in rama) or ("claude" in rama)
+        if n:
+            return f"<span class='veto-fires hit'>🔥 {n} disparos (7d)</span>"
+        if not r["activa"]:
+            return ""
+        if duro:
+            return "<span class='veto-fires zero'>0 disparos (7d) — revisar si sigue vigente</span>"
+        return "<span class='veto-fires soft'>anula predicción · efecto en el reporte</span>"
 
     def tabla_vetos(rows):
         """Vetos compactos — cada uno una fila con nombre, dónde aplica,
@@ -2544,6 +2585,7 @@ def reglas(request: Request, msg: str = "") -> str:
                 f"<div class='veto-head'>"
                 f"<span class='veto-nombre'>{prot} <b>{_e(r['nombre'] or '—')}</b></span>"
                 f"<span class='veto-aplica'>{_e(r['aplica_a'] or 'inicio_cascada')}{pact_f}</span>"
+                f"{_badge_fires(r)}"
                 f"<span class='veto-estado'>{estado_txt}</span>"
                 f"<span class='veto-acc'>{acc}</span>"
                 f"</div>"
@@ -2584,6 +2626,10 @@ def reglas(request: Request, msg: str = "") -> str:
 .veto-aplica code { background: #eef1f4; padding: 1px 5px; border-radius: 3px;
                     font-size: 11px; }
 .veto-estado { font-size: 12px; color: #6b7689; }
+.veto-fires { font-size: 11.5px; padding: 1px 8px; border-radius: 10px; white-space: nowrap; }
+.veto-fires.hit { background: #d9f0e1; color: #1b6b3a; font-weight: 600; }
+.veto-fires.zero { background: #fdeccf; color: #7a4e09; }
+.veto-fires.soft { background: #eef1f4; color: #6b7689; font-style: italic; }
 .veto-razon { color: #44506a; font-size: 12.5px; margin-top: 4px;
               padding-left: 4px; border-left: 2px solid #d9e0ea; padding-left: 8px;
               padding-top: 4px; padding-bottom: 4px; }
