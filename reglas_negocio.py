@@ -12,9 +12,19 @@ from __future__ import annotations
 
 from db import conexion_worker
 
-_SQL = (
-    "SELECT tipo, texto FROM clasificador_ia_reglas "
-    "WHERE activa = 1 ORDER BY creado_en DESC LIMIT %s"
+# IMPORTANTE: dos consultas separadas, NO un solo SELECT con LIMIT. Las
+# correcciones se agregan a diario (miles) y las reglas son pocas y estables;
+# un `WHERE activa=1 ORDER BY creado_en DESC LIMIT 120` único dejaba el top-120
+# lleno de correcciones recientes y las reglas NUNCA entraban al prompt
+# (medido 2026-06-11: 0/14 reglas en el top-120). Reglas = TODAS las activas
+# (son pocas); correcciones = las `limite` más recientes.
+_SQL_REGLAS = (
+    "SELECT texto FROM clasificador_ia_reglas "
+    "WHERE activa = 1 AND tipo = 'regla' ORDER BY creado_en DESC"
+)
+_SQL_CORRECCIONES = (
+    "SELECT texto FROM clasificador_ia_reglas "
+    "WHERE activa = 1 AND tipo = 'correccion' ORDER BY creado_en DESC LIMIT %s"
 )
 
 
@@ -23,13 +33,12 @@ def cargar_feedback(limite: int = 120) -> str:
     try:
         conn = conexion_worker()
         with conn.cursor() as cur:
-            cur.execute(_SQL, (limite,))
-            filas = cur.fetchall()
+            cur.execute(_SQL_REGLAS)
+            reglas = [f["texto"] for f in cur.fetchall()]
+            cur.execute(_SQL_CORRECCIONES, (limite,))
+            correcciones = [f["texto"] for f in cur.fetchall()]
     except Exception:
         return ""
-
-    reglas = [f["texto"] for f in filas if f["tipo"] == "regla"]
-    correcciones = [f["texto"] for f in filas if f["tipo"] == "correccion"]
 
     bloques = []
     if reglas:
