@@ -255,8 +255,13 @@ VETO_GLUCOSA_SENSOR = re.compile(
 # (manómetros industriales, dispensadores Ecolab, jabones líquidos comerciales,
 # DW-40). Criterio Carolina: solo glicerina/jabón médico. Verificado contra TPs
 # para NO romper 'BASE JABÓN GLICERINA' y similares (no usan estas palabras).
+# Glicerina NO médica: industrial (manómetros, DW-40, Ecolab) + jabón/cosmético.
+# Fusión validada 2026-06-11: "jabón glicerina" es DESCARTE (29/34 descarte; los
+# de interés eran jabón de limpieza institucional mal aprobado). La Glicerina
+# farmacéutica real (pura/supositorios) no usa estas palabras → 0 FN real.
 VETO_GLICERINA_NO_MEDICA = re.compile(
-    r"\b(?:manometro|manómetro|dw-?40|anticorrosivo|ecolab)\b",
+    r"\b(?:manometro|manómetro|dw-?40|anticorrosivo|ecolab|"
+    r"jab[oó]n|industrial|champ[uú]|tinta|cuero|barniz|cosmetic[oa]|perfum[eo]?)\b",
     re.IGNORECASE,
 )
 
@@ -395,7 +400,12 @@ def _fallback_por_rama() -> dict:
              "Cinta de oficina/ferretería/impresora — no es Cinta Adhesiva Médica.")
     aguja = ("aguja_hipodermica_no_insulina", VETO_AGUJA_HIPODERMICA_NO_INSULINA,
              "Aguja de insulina", "Aguja hipodérmica/gripper — no es aguja de insulina.")
-    return {"modelo_pactivo": [cinta, aguja], "modelo_marcas": [cinta, aguja], "claude": []}
+    lubri = ("lubricante_no_intimo", VETO_LUBRICANTE_NO_INTIMO, "Lubricante",
+             "Lubricante industrial/instrumental — no es el íntimo.")
+    glice = ("glicerina_no_medica", VETO_GLICERINA_NO_MEDICA, "Glicerina",
+             "Glicerina industrial/jabón/cosmético — no farma.")
+    return {"modelo_pactivo": [cinta, aguja], "modelo_marcas": [cinta, aguja],
+            "claude": [], "regla_diccionario": [lubri, glice]}
 
 
 _FALLBACK_POR_RAMA = _fallback_por_rama()
@@ -645,10 +655,13 @@ def _clasificar_fila_impl(
     if pactivo:
         pact_n = normalizar(pactivo)
         desc_lower = (descripcion or "")
-        if pact_n == normalizar("Glicerina") and VETO_GLICERINA_NO_MEDICA.search(desc_lower):
+        # Vetos dinámicos de la rama regla_diccionario (BD: glicerina,
+        # lubricante, bicarbonato; editables en /reglas). Evalúa pactivo_filtro.
+        # Antes glicerina/lubricante eran hardcode; ahora editables sin deploy.
+        if _veto_dinamico_dispara("regla_diccionario", pactivo, desc_lower):
             pactivo = None
-        elif pact_n == normalizar("Lubricante") and VETO_LUBRICANTE_NO_INTIMO.search(desc_lower):
-            pactivo = None
+        # Antibióticos NO-medicamento: usa membership del SET ANTIBIOTICOS — no
+        # mapea a un pactivo_filtro único, se mantiene hardcoded a propósito.
         elif pact_n in ANTIBIOTICOS and VETO_ANTIBIOT_NO_MEDICA.search(desc_lower):
             pactivo = None
         # VETO SUFIJO COMPUESTO en regla_diccionario — caso medido 2026-06-08:
