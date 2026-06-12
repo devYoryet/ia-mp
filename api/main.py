@@ -2432,9 +2432,11 @@ def _veto_fires(dias: int = 7) -> dict:
         return c["data"]
     out: dict = {}
     try:
+        # OJO: con parámetros (%s), el % literal del LIKE debe ir como %% o
+        # pymysql lo toma como spec de formato y rompe (el except devolvía {}).
         rows = _query(
             "SELECT metodo, COUNT(*) n FROM clasificador_ia_log "
-            "WHERE metodo LIKE 'veto\\_%' AND creado_en >= (NOW() - INTERVAL %s DAY) "
+            "WHERE metodo LIKE 'veto\\_%%' AND creado_en >= (NOW() - INTERVAL %s DAY) "
             "GROUP BY metodo", (dias,))
         for r in rows:
             out[(r["metodo"] or "")[5:]] = r["n"]  # quita el prefijo 'veto_'
