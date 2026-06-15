@@ -102,12 +102,13 @@ def aplicar_produccion(tabla: str, fila: dict, r: Resultado) -> None:
             " pactivo_sugerido, composicion_sugerida, presentacion_sugerida, "
             " metodo, confianza, razon, pactivo_nuevo, modelo, prompt_version, "
             " tokens_in, tokens_out, cache_read_tok, cache_write_tok, costo_usd, "
-            " creado_en) "
-            "VALUES (" + ",".join(["%s"] * 19) + ")",
+            " veto_aplicado, creado_en) "
+            "VALUES (" + ",".join(["%s"] * 20) + ")",
             (tabla, fila["id"], (fila.get("Descripcion") or "")[:1000],
              r.interes, r.pactivo, r.composicion, r.presentacion, r.metodo,
              r.confianza, r.razon, r.pactivo_propuesto, config.modelo, PROMPT_VERSION,
-             r.tokens_in, r.tokens_out, r.cache_read, r.cache_write, r.costo_usd, ahora),
+             r.tokens_in, r.tokens_out, r.cache_read, r.cache_write, r.costo_usd,
+             r.veto_aplicado, ahora),
         )
         _registrar_costo(cur, r)
     conn.commit()

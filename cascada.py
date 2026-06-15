@@ -333,6 +333,9 @@ class Resultado:
     tokens_out: int = 0
     cache_read: int = 0
     cache_write: int = 0
+    # Trazabilidad: nombre del veto que disparó (descarte duro o anulación de
+    # rama). None si ningún veto intervino. Lo escribe escritor → BD.
+    veto_aplicado: Optional[str] = None
 
 
 # ============================================================================
@@ -450,10 +453,11 @@ def clasificar_fila(
 
     `marcas_texto` (opcional) llega solo a Claude como bloque cacheable de
     `marcas → pactivo` inequívocas del catálogo activo (ver `marcas.cargar_marcas_para_prompt`)."""
+    ctx: dict = {}  # trazabilidad: las ramas que anulan por veto escriben aquí
     r = _clasificar_fila_impl(
         tabla, fila, taxonomia, pactivos_norm, descartes, cruce, combinaciones,
         modelo_descarte, ejemplos, indice_inverso, modelo_pactivo, marcas_texto,
-        modelo_marcas,
+        modelo_marcas, ctx,
     )
     # FINAL GUARD del PACTIVO: una rama puede haber dejado un pactivo que ya
     # NO está en el catálogo activo (cliente desactivado, decisión de negocio).
@@ -483,6 +487,11 @@ def clasificar_fila(
             r.presentacion = preclasificador.canonizar_pres(
                 taxonomia, tabla, r.pactivo, r.presentacion
             )
+    # Trazabilidad: si una rama (modelo_pactivo/marcas/regla) anuló su predicción
+    # por un veto, registrarlo. Los vetos de inicio/jabón/claude ya vienen con
+    # veto_aplicado seteado en su Resultado.
+    if not r.veto_aplicado and ctx.get("veto"):
+        r.veto_aplicado = ctx["veto"]
     return r
 
 
@@ -500,6 +509,7 @@ def _clasificar_fila_impl(
     modelo_pactivo=None,
     marcas_texto: str = "",
     modelo_marcas=None,
+    ctx: "Optional[dict]" = None,
 ) -> Resultado:
     descripcion = fila.get("Descripcion")
     titulo = fila.get("Titulo")
@@ -522,6 +532,7 @@ def _clasificar_fila_impl(
             return Resultado(
                 interes=0, pactivo=None, composicion=None, presentacion=None,
                 confianza=0.97, metodo=f"veto_{nombre}", razon=razon,
+                veto_aplicado=nombre,
             )
     # Jabón líquido: veto con EXCEPCIÓN. Si la glosa dice "jabón líquido" pero
     # también "alcohol gel", NO vetar (es jabón-alcohol = Alcohol Gel, válido).
@@ -530,6 +541,7 @@ def _clasificar_fila_impl(
             interes=0, pactivo=None, composicion=None, presentacion=None,
             confianza=0.97, metodo="veto_jabon_no_farma",
             razon="Jabón líquido / institucional / manos — no se clasifica.",
+            veto_aplicado="jabon_no_farma",
         )
 
     # Cruce Base — descripción idéntica a una OC REAL del catálogo 0001_td_oc.Base.
@@ -658,7 +670,8 @@ def _clasificar_fila_impl(
         # Vetos dinámicos de la rama regla_diccionario (BD: glicerina,
         # lubricante, bicarbonato; editables en /reglas). Evalúa pactivo_filtro.
         # Antes glicerina/lubricante eran hardcode; ahora editables sin deploy.
-        if _veto_dinamico_dispara("regla_diccionario", pactivo, desc_lower):
+        if (_vr := _veto_dinamico_dispara("regla_diccionario", pactivo, desc_lower)):
+            if ctx is not None: ctx["veto"] = _vr[0]
             pactivo = None
         # Antibióticos NO-medicamento: usa membership del SET ANTIBIOTICOS — no
         # mapea a un pactivo_filtro único, se mantiene hardcoded a propósito.
@@ -761,7 +774,8 @@ def _clasificar_fila_impl(
         # no-insulina (regla solo-insulina id=1388), cinta transparente, etc.
         # Si dispara → se anula la predicción y la cascada sigue
         # (modelo_descarte → Claude). Antes esto era hardcode cinta/aguja.
-        if _veto_dinamico_dispara("modelo_pactivo", pact_pred, descripcion or ""):
+        if (_vp := _veto_dinamico_dispara("modelo_pactivo", pact_pred, descripcion or "")):
+            if ctx is not None: ctx["veto"] = _vp[0]
             pact_pred = None
         # Veto SUFIJO COMPUESTO: si el modelo predice un pactivo SIMPLE (sin
         # guión) pero la glosa indica compuesto (D, Plus, HCT, dosis dual X/Y),
@@ -802,7 +816,8 @@ def _clasificar_fila_impl(
             # Vetos dinámicos de la rama modelo_marcas (BD; cinta no-médica,
             # aguja no-insulina, cinta transparente, etc.). Evalúa pactivo_filtro.
             # Mismo conjunto que modelo_pactivo. Antes era hardcode cinta/aguja.
-            if _veto_dinamico_dispara("modelo_marcas", pact_m, descripcion or ""):
+            if (_vm := _veto_dinamico_dispara("modelo_marcas", pact_m, descripcion or "")):
+                if ctx is not None: ctx["veto"] = _vm[0]
                 pact_m = None
             # 'Alargador Venoso' o 'Alargador Arterial' con glosa de CATETER —
             # son catéteres, no alargadores. Caso medido 2026-06-08: 5 FP
@@ -874,6 +889,7 @@ def _clasificar_fila_impl(
             return Resultado(
                 interes=0, pactivo=None, composicion=None, presentacion=None,
                 confianza=float(c.confianza), metodo=f"veto_{_v[0]}", razon=_v[1],
+                veto_aplicado=_v[0],
                 costo_usd=uso.costo_usd, tokens_in=uso.tokens_in,
                 tokens_out=uso.tokens_out, cache_read=uso.cache_read,
                 cache_write=uso.cache_write,
