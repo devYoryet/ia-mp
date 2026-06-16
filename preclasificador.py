@@ -247,6 +247,58 @@ def _unif_decimal(s: str) -> str:
     return (s or "").replace(",", ".")
 
 
+# 'gr'/'grs' = gramos (forma común en glosas). Orden: las más largas primero.
+_RE_NUM_UNIT = re.compile(r"^([\d.]+)(mcg|ug|mg|kg|grs|gr|g|ml|cc|lt|l)$")
+_A_MG = {"kg": 1e6, "g": 1e3, "gr": 1e3, "grs": 1e3, "mg": 1.0, "mcg": 1e-3, "ug": 1e-3}
+_A_ML = {"lt": 1e3, "l": 1e3, "cc": 1.0, "ml": 1.0}
+
+
+def _fmt_num(x: float) -> str:
+    """Número sin notación científica ni ceros sobrantes: 1000.0->'1000', 7.5->'7.5'."""
+    return ("%f" % x).rstrip("0").rstrip(".")
+
+
+def _canon_unidad_simple(v: str) -> str:
+    """Canon de UN 'numero+unidad': masa→mg ('1g'->'1000mg', '5000mcg'->'5mg'),
+    volumen→ml ('cc'->'ml', '1l'->'1000ml'). No-match (%, mg/ml, sin unidad) → v."""
+    m = _RE_NUM_UNIT.match(v or "")
+    if not m:
+        return v
+    try:
+        num = float(m.group(1))
+    except ValueError:
+        return v
+    u = m.group(2)
+    if u in _A_MG:
+        return _fmt_num(num * _A_MG[u]) + "mg"
+    if u in _A_ML:
+        return _fmt_num(num * _A_ML[u]) + "ml"
+    return v
+
+
+def _canon_unidad(v: str) -> str:
+    """Lleva un valor a BASE canónica para matchear equivalencias de unidad.
+    - Simple: '1g'=='1000mg', 'cc'=='ml'.
+    - COMPUESTO (pactivo de 2-3 principios): cada componente lleva su dosis y
+      unidad propia, ej. '800mg-20mg', '0,8g-20mg'. Se separa por '-'/'+' y se
+      canoniza CADA parte SOLO si TODAS son numero+unidad ('0.8g-20mg'->'800mg-20mg').
+      Si alguna parte no tiene unidad propia ('40-12,5mg' = unidad compartida, o
+      rangos '5-10mg'), se deja LITERAL (matchea como está).
+    Deja INTACTO %, mg/ml, 'Sin cla' / 'Sin Clas' (esas se short-circuitean antes,
+    son comp válidas distintas), vacío. Entra normalizado
+    (_unif_decimal(normalizar_valor(...))). Se aplica a AMBOS lados → solo AGREGA
+    equivalencias, nunca rompe un literal."""
+    if not v:
+        return v
+    if "-" in v or "+" in v:
+        sep = "-" if "-" in v else "+"
+        partes = v.split(sep)
+        if all(_RE_NUM_UNIT.match(p) for p in partes):
+            return sep.join(_canon_unidad_simple(p) for p in partes)
+        return v
+    return _canon_unidad_simple(v)
+
+
 def canonizar_comp(tax, tabla: str, pactivo: Optional[str], comp: Optional[str]) -> Optional[str]:
     """VALIDADOR FINAL de composición — confirma que la comp asignada EXISTE para
     el pactivo en el catálogo (Base + diccionario + histórico humano). Resuelve:
@@ -267,19 +319,21 @@ def canonizar_comp(tax, tabla: str, pactivo: Optional[str], comp: Optional[str])
     # {decimal_unificado(normalizado): forma_canónica}. Base/diccionario PRIMERO
     # (forma oficial del catálogo, p.ej. '7,5mg' con coma chilena), luego el
     # histórico humano ordenado por frecuencia — setdefault da prioridad a Base.
+    # Clave: decimal unificado + canon de unidad ('1g' y '1000mg' caen al mismo
+    # canónico). El valor es la forma REAL del catálogo (Base primero por setdefault).
     mapa: dict = {}
     hay = False
     for c in sorted(getattr(tax, "comp_por_pactivo", {}).get(pact_n, set())):
         if c and c.strip():
             hay = True
-            mapa.setdefault(_unif_decimal(normalizar_valor(c)), c.strip())
+            mapa.setdefault(_canon_unidad(_unif_decimal(normalizar_valor(c))), c.strip())
     for c, _p, _n in _COMP_PRES_OPCIONES.get(tabla, {}).get(pact_n, []):
         if c and c.strip():
             hay = True
-            mapa.setdefault(_unif_decimal(normalizar_valor(c)), c.strip())
+            mapa.setdefault(_canon_unidad(_unif_decimal(normalizar_valor(c))), c.strip())
     if not hay:
         return comp  # pactivo sin comps conocidas — no validar (no romper)
-    return mapa.get(_unif_decimal(nv), "Sin cla")
+    return mapa.get(_canon_unidad(_unif_decimal(nv)), "Sin cla")
 
 
 def canonizar_pres(tax, tabla: str, pactivo: Optional[str], pres: Optional[str]) -> Optional[str]:
@@ -300,11 +354,11 @@ def canonizar_pres(tax, tabla: str, pactivo: Optional[str], pres: Optional[str])
     for m in sorted(getattr(tax, "pres_por_pactivo", {}).get(pact_n, set())):
         if m and m.strip():
             hay = True
-            mapa.setdefault(normalizar_valor(m), m.strip())
+            mapa.setdefault(_canon_unidad(_unif_decimal(normalizar_valor(m))), m.strip())
     for _c, p, _n in _COMP_PRES_OPCIONES.get(tabla, {}).get(pact_n, []):
         if p and p.strip():
             hay = True
-            mapa.setdefault(normalizar_valor(p), p.strip())
+            mapa.setdefault(_canon_unidad(_unif_decimal(normalizar_valor(p))), p.strip())
     if not hay:
         return pres
-    return mapa.get(nv, "Sin cla")
+    return mapa.get(_canon_unidad(_unif_decimal(nv)), "Sin cla")
