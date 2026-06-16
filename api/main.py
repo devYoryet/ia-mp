@@ -2432,14 +2432,18 @@ def _veto_fires(dias: int = 7) -> dict:
         return c["data"]
     out: dict = {}
     try:
-        # OJO: con parámetros (%s), el % literal del LIKE debe ir como %% o
-        # pymysql lo toma como spec de formato y rompe (el except devolvía {}).
+        # veto_aplicado cubre TODAS las ramas (incl. per-rama que antes eran
+        # invisibles). fn = el veto descartó algo que el humano rescató
+        # (interes=0, feedback_correcto=0, feedback_pactivo lleno) = over-firing.
         rows = _query(
-            "SELECT metodo, COUNT(*) n FROM clasificador_ia_log "
-            "WHERE metodo LIKE 'veto\\_%%' AND creado_en >= (NOW() - INTERVAL %s DAY) "
-            "GROUP BY metodo", (dias,))
+            "SELECT veto_aplicado v, COUNT(*) n, "
+            "SUM(interes_sugerido=0 AND feedback_correcto=0 AND feedback_pactivo IS NOT NULL "
+            "AND feedback_pactivo<>'') fn "
+            "FROM clasificador_ia_log "
+            "WHERE veto_aplicado IS NOT NULL AND creado_en >= (NOW() - INTERVAL %s DAY) "
+            "GROUP BY veto_aplicado", (dias,))
         for r in rows:
-            out[(r["metodo"] or "")[5:]] = r["n"]  # quita el prefijo 'veto_'
+            out[r["v"]] = {"fires": r["n"], "fn": int(r["fn"] or 0)}
     except Exception:  # noqa: BLE001
         out = {}
     c["ts"], c["data"] = ahora, out
@@ -2545,19 +2549,20 @@ def reglas(request: Request, msg: str = "") -> str:
     except Exception:
         vetos = []
     es_admin = _es_admin(usuario)
-    fires = _veto_fires()  # disparos por veto (7d) — solo descarte duro
+    fires = _veto_fires()  # {nombre: {fires, fn}} por veto (7d, vía veto_aplicado)
 
     def _badge_fires(r) -> str:
-        rama = (r["aplica_a"] or "inicio_cascada")
-        n = fires.get(r["nombre"])
-        duro = ("inicio_cascada" in rama) or ("claude" in rama)
-        if n:
-            return f"<span class='veto-fires hit'>🔥 {n} disparos (7d)</span>"
+        st = fires.get(r["nombre"])
         if not r["activa"]:
             return ""
-        if duro:
-            return "<span class='veto-fires zero'>0 disparos (7d) — revisar si sigue vigente</span>"
-        return "<span class='veto-fires soft'>anula predicción · efecto en el reporte</span>"
+        if not st or not st["fires"]:
+            return "<span class='veto-fires zero'>0 disparos (7d)</span>"
+        b = f"<span class='veto-fires hit'>🔥 {st['fires']} disparos (7d)</span>"
+        if st["fn"]:
+            # FN = el veto descartó algo que el humano rescató → over-firing
+            b += (f" <span class='veto-fires fn' title='El humano rescató "
+                  f"{st['fn']} de las que este veto eliminó — revisar'>⚠️ {st['fn']} FN</span>")
+        return b
 
     def tabla_vetos(rows):
         """Vetos compactos — cada uno una fila con nombre, dónde aplica,
@@ -2632,6 +2637,7 @@ def reglas(request: Request, msg: str = "") -> str:
 .veto-fires.hit { background: #d9f0e1; color: #1b6b3a; font-weight: 600; }
 .veto-fires.zero { background: #fdeccf; color: #7a4e09; }
 .veto-fires.soft { background: #eef1f4; color: #6b7689; font-style: italic; }
+.veto-fires.fn { background: #fbe4e1; color: #c0392b; font-weight: 700; }
 .veto-razon { color: #44506a; font-size: 12.5px; margin-top: 4px;
               padding-left: 4px; border-left: 2px solid #d9e0ea; padding-left: 8px;
               padding-top: 4px; padding-bottom: 4px; }
@@ -3223,6 +3229,34 @@ td code, th code { background:#f3f6fa; padding:1px 5px; border-radius:4px; font-
         f"<span class=cnt>{cambio}</span></a>"
         "</div></div>"
     )
+
+    # FN causados por VETOS ese día (drill-down: del FN al veto culpable).
+    # Live desde veto_aplicado — el veto descartó algo que el humano rescató.
+    try:
+        _ini = f"{dia} 04:00:00"  # día Chile en UTC (revisado_en es UTC, Chile=-4)
+        from datetime import datetime as _dt, timedelta as _tdv
+        _fin = (_dt.strptime(dia, "%Y-%m-%d") + _tdv(days=1)).strftime("%Y-%m-%d 04:00:00")
+        fnv = _query(
+            "SELECT veto_aplicado v, COUNT(*) n, LEFT(MIN(descripcion),60) ej "
+            "FROM clasificador_ia_log WHERE veto_aplicado IS NOT NULL "
+            "AND interes_sugerido=0 AND feedback_correcto=0 AND feedback_pactivo IS NOT NULL "
+            "AND feedback_pactivo<>'' AND revisado_en >= %s AND revisado_en < %s "
+            "GROUP BY veto_aplicado ORDER BY n DESC", (_ini, _fin))
+    except Exception:  # noqa: BLE001
+        fnv = []
+    if fnv:
+        filas_fnv = "".join(
+            f"<tr><td><a href='/reglas'><code>{_e(r['v'])}</code></a></td>"
+            f"<td>{r['n']}</td><td>{_e((r['ej'] or '')[:55])}</td></tr>" for r in fnv)
+        out.append(
+            "<div class=err-box style='border-left-color:#a5281c'>"
+            "<h2>🚨 FN causados por VETOS (revisar el veto)</h2>"
+            "<div class=sub>El veto eliminó algo que el humano rescató. Si un veto "
+            "aparece acá seguido, está over-firing → ajustar/desactivar en "
+            "<a href='/reglas'>Reglas</a>.</div>"
+            "<table><tr><th>Veto</th><th>FN</th><th>ejemplo</th></tr>"
+            + filas_fnv + "</table></div>"
+        )
 
     # Detalle: tablas
     out.append(_tabla(
