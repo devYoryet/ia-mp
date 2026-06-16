@@ -71,7 +71,7 @@ def asegurar_directorio_reportes():
 def limpiar_columna(series):
     res = series.astype(str).str.replace('_x000D_', ' ')
     res = res.str.replace(r'_x[0-9A-Fa-f]{4}_', ' ', regex=True)
-    res = res.apply(lambda x: "".join(c for c in unicodedata.normalize('NFKD', x) 
+    res = res.apply(lambda x: "".join(c for c in unicodedata.normalize('NFKD', str(x))
                                      if unicodedata.category(c) != 'Mn'))
 
     res = res.str.replace(r'\s+', ' ', regex=True).str[:255].str.strip()
