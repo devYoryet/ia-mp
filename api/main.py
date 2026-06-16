@@ -2769,10 +2769,10 @@ def agregar_veto(request: Request, nombre: str = Form(...),
             cur.execute(
                 "INSERT INTO clasificador_ia_reglas "
                 "(tipo, nombre, regex_pattern, aplica_a, pactivo_filtro, "
-                "texto, creado_por, creado_en, activa, protegido) "
-                "VALUES ('veto',%s,%s,%s,%s,%s,%s,%s,1,0)",
+                "pactivo_asociado, texto, creado_por, creado_en, activa, protegido) "
+                "VALUES ('veto',%s,%s,%s,%s,%s,%s,%s,%s,1,0)",
                 (nombre, regex_pattern, aplica_a, pactivo_filtro,
-                 razon, creado_por, datetime.now()),
+                 pactivo_filtro, razon, creado_por, datetime.now()),
             )
         conn.commit()
     finally:
@@ -2860,6 +2860,26 @@ def pactivos_extra_get(request: Request, msg: str = "") -> str:
     activos = [r for r in items if r["activo"]]
     inactivos = [r for r in items if not r["activo"]]
 
+    # Vetos asociados a pactivos → para el 🔴 (un pactivo que se reintegra puede
+    # tener un veto que lo descarta; el admin debe verlo). {pactivo_norm: [vetos]}
+    vetos_pact: dict = {}
+    try:
+        for v in _query(
+            "SELECT nombre, pactivo_asociado, activa FROM clasificador_ia_reglas "
+            "WHERE tipo='veto' AND pactivo_asociado IS NOT NULL AND pactivo_asociado<>''"
+        ):
+            vetos_pact.setdefault((v["pactivo_asociado"] or "").strip().lower(), []).append(v)
+    except Exception:  # noqa: BLE001
+        vetos_pact = {}
+
+    def _veto_badge(pact):
+        vs = [v for v in vetos_pact.get((pact or "").strip().lower(), []) if v["activa"]]
+        if not vs:
+            return ""
+        nombres = ", ".join(_e(v["nombre"]) for v in vs)
+        return (f" <a href='/reglas' title='Veto ACTIVO que lo descarta: {nombres}' "
+                f"style='color:#c0392b;font-weight:700;text-decoration:none'>🔴 veto</a>")
+
     def tabla(rows, mostrar_acciones: bool):
         if not rows:
             return "<div class=vacio>Sin registros.</div>"
@@ -2880,7 +2900,7 @@ def pactivos_extra_get(request: Request, msg: str = "") -> str:
                     f"{_e(_ts(r['desactivado_en']))}</small>"
                 )
             f.append(
-                f"<tr><td><b>{_e(r['pactivo'])}</b>{inactivo_info}</td>"
+                f"<tr><td><b>{_e(r['pactivo'])}</b>{_veto_badge(r['pactivo'])}{inactivo_info}</td>"
                 f"<td>{_e(r['agregado_por'])}</td>"
                 f"<td>{_e(_ts(r['agregado_en']))}</td>"
                 f"<td><small>{_e((r['motivo'] or '')[:200])}</small></td>"
@@ -2890,9 +2910,33 @@ def pactivos_extra_get(request: Request, msg: str = "") -> str:
                 "<th>Motivo</th><th></th></tr>" + "".join(f) + "</table>")
 
     aviso = f"<div class=aviso>{_e(msg)}</div>" if msg else ""
+
+    # Registro veto↔pactivo: ANTES de reintegrar un pactivo, el admin ve si tiene
+    # un veto activo que lo descarta (caso "vuelve medio de contraste / alargador").
+    activos_veto = {p: vs for p, vs in vetos_pact.items() if any(v["activa"] for v in vs)}
+    if activos_veto:
+        filas_rv = ""
+        for vs in sorted(activos_veto.values(), key=lambda x: x[0]["pactivo_asociado"].lower()):
+            pact = vs[0]["pactivo_asociado"]
+            nombres = ", ".join(_e(v["nombre"]) for v in vs if v["activa"])
+            filas_rv += (f"<tr><td><b>{_e(pact)}</b></td><td>{nombres}</td></tr>")
+        registro_vetos = (
+            "<div style='background:#fff4f2;border:1px solid #e0b4ad;border-left:5px solid "
+            "#c0392b;border-radius:8px;padding:12px 16px;margin:14px 0'>"
+            "<b style='color:#c0392b'>🔴 Pactivos con veto activo</b>"
+            "<p style='font-size:13px;color:#7c3a30;margin:4px 0 10px'>Si vas a "
+            "(re)integrar uno de estos, ojo: hay un veto que lo descarta. Revisalo/"
+            "desactivalo en <a href='/reglas'>Reglas</a> primero.</p>"
+            "<table><tr><th>Pactivo</th><th>Veto(s) activos</th></tr>"
+            + filas_rv + "</table></div>"
+        )
+    else:
+        registro_vetos = ""
+
     cuerpo = (
         "<h1>Pactivos extra — catálogo manual</h1>"
         + aviso
+        + registro_vetos
         + "<p>Agrega pactivos farma legítimos que NO están en Base ni los pide "
         "ningún cliente activo. Se SUMAN al catálogo activo del clasificador. "
         "El worker los recoge en menos de 3 minutos.</p>"
