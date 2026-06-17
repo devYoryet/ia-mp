@@ -487,6 +487,15 @@ def clasificar_fila(
             r.presentacion = preclasificador.canonizar_pres(
                 taxonomia, tabla, r.pactivo, r.presentacion
             )
+        # Fallback: si la comp quedó comodín ('Sin cla') — típico del histórico,
+        # que devuelve la etiqueta humana verbatim — y la glosa SÍ trae la dosis,
+        # recuperarla de la glosa validada per-pactivo (unit-aware). NO inventa
+        # (solo si existe para el pactivo) y NO toca el pactivo.
+        if normalizar(r.composicion or "").replace(" ", "") in ("", "sincla"):
+            _txt = f"{fila.get('Titulo') or ''} {fila.get('Descripcion') or ''}".strip()
+            _rec = preclasificador.recuperar_comp_de_glosa(taxonomia, tabla, r.pactivo, _txt)
+            if _rec:
+                r.composicion = _rec
     # Trazabilidad: si una rama (modelo_pactivo/marcas/regla) anuló su predicción
     # por un veto, registrarlo. Los vetos de inicio/jabón/claude ya vienen con
     # veto_aplicado seteado en su Resultado.

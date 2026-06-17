@@ -362,3 +362,38 @@ def canonizar_pres(tax, tabla: str, pactivo: Optional[str], pres: Optional[str])
     if not hay:
         return pres
     return mapa.get(_canon_unidad(_unif_decimal(nv)), "Sin cla")
+
+
+# Tokens de dosis crudos en una glosa (para el fallback de comp comodín).
+_RE_DOSIS_GLOSA = re.compile(
+    r"(\d[\d.,]*)\s*(mg/ml|mg/g|ui/ml|mcg|ug|mg|kg|grs|gr|g|ui|%|ml|cc|lt|l)\b",
+    re.IGNORECASE,
+)
+
+
+def recuperar_comp_de_glosa(tax, tabla: str, pactivo: Optional[str],
+                            texto: Optional[str]) -> Optional[str]:
+    """Cuando la composición quedó comodín ('Sin cla') — típico del histórico, que
+    devuelve la etiqueta humana verbatim — intenta RECUPERARLA de la glosa:
+      1) `extraer_de_glosa` (maneja compuestos y la dosis más relevante), y
+      2) si no, tokens de dosis crudos (recupera unit-mismatch que extraer rechaza,
+         p.ej. '1g' cuando el catálogo guarda '1000mg').
+    Cada candidato se VALIDA per-pactivo con `canonizar_comp` (unit-aware): devuelve
+    la forma REAL del catálogo o None. NO inventa — solo si esa comp EXISTE para el
+    pactivo. No toca el pactivo (solo rellena la comp comodín)."""
+    if not texto or not pactivo:
+        return None
+    cands: list = []
+    try:
+        cg, _pg = tax.extraer_de_glosa(texto, pactivo)
+        if cg:
+            cands.append(cg)
+    except Exception:  # noqa: BLE001
+        pass
+    for num, uni in _RE_DOSIS_GLOSA.findall(texto):
+        cands.append((num + uni).replace(" ", ""))
+    for cand in cands:
+        cc = canonizar_comp(tax, tabla, pactivo, cand)
+        if cc and normalizar_valor(cc) not in ("sincla", "sinclas"):
+            return cc
+    return None
