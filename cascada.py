@@ -41,6 +41,39 @@ from taxonomia import Taxonomia
 # discos de antibiograma. Descarte duro por palabra clave (ver veto en la cascada).
 VETO_SENSIDISCOS = re.compile(r"sensi\s*disco|senci\s*disco", re.IGNORECASE)
 
+# CAMINO 2 (#4b, medido 2026-06-23) — guardia de coherencia descripción↔rubro
+# ANTES de descarte_item. Si la glosa del ítem NO trae producto (es solo una
+# referencia a un anexo/línea/canasta) y el TÍTULO del tender es médico/farma,
+# el descarte por rubro se apoya SOLO en un código (Item/Cod_Onu) que el
+# comprador pudo asignar mal. En ese caso no se descarta por rubro: la cascada
+# sigue hasta Claude, donde la regla Adjunto (recall-first) decide con el título
+# completo. Medido: ~23/mes (0.02% de descarte_item), casi señal pura — el ruido
+# de dispositivos se excluye solo (si la glosa nombra un producto, NO es "solo
+# referencia"). Ver [[adjunto-fn-lever]].
+_TITULO_MEDICO = re.compile(
+    r"medicament|\bfarmac|f[áa]rmac|insumo.{0,8}(?:m[ée]dic|cl[íi]nic|salud|hospital|"
+    r"enfermer)|quir[úu]rgic|odontolog|dental|vacuna|botiqu[íi]n|farmacia|veterinari",
+    re.IGNORECASE,
+)
+# tokens que son SOLO referencia administrativa a un anexo (no producto)
+_REF_ANEXO_TOK = re.compile(
+    r"ver|anexo|adjunt[oa]?s?|seg[uú]n|listado|detalle|l[ií]nea|[íi]tem|canasta|"
+    r"n[°ºo]|ee\.?tt|especificaci\w*|t[ée]rminos|referencia|planilla|requerimiento|"
+    r"tecnic\w*|bases|punto|de|la|el|los|las|y|en|del",
+    re.IGNORECASE,
+)
+
+
+def _glosa_solo_referencia(desc: str | None) -> bool:
+    """True si la glosa es SOLO una referencia a anexo/línea (sin producto):
+    tras quitar los tokens de referencia y números/símbolos quedan ≤6 letras."""
+    d = desc or ""
+    if not d.strip():
+        return False
+    resto = _REF_ANEXO_TOK.sub(" ", d)
+    letras = re.sub(r"[^a-záéíóúñ]", "", resto.lower())
+    return len(letras) <= 6
+
 # VETOS DUROS por glosa — descartan ANTES de cualquier rama (igual molde que
 # sensidiscos). Migran reglas largas del prompt (regla 385 consolidada) al
 # código, sin costo extra en el prompt cacheable. Cada uno cubre un producto
@@ -472,7 +505,17 @@ def clasificar_fila(
     # ramas cruce_base, historico y modelo_pactivo YA validan en su propio
     # cuerpo; este guard cierra las restantes. Anular y bajar a descarte; la
     # cola humana lo procesa como FN si corresponde.
-    if r.interes == 1 and r.pactivo and normalizar(r.pactivo) not in pactivos_norm:
+    #
+    # EXCEPCIÓN meta-pactivo (regresión medida 2026-06-23): 'Adjunto' SÍ está en
+    # el catálogo activo (taxonomia.pactivos) pero se excluye del índice matchable
+    # a propósito (PACTIVOS_NO_MATCH_DIRECTO) para que la palabra "adjunto" en una
+    # glosa NO dispare el pactivo vía regla_diccionario. El guard usaba pactivos_norm
+    # y por eso MATABA todo 'Adjunto' que emitía Claude (semana 22-23 en adelante:
+    # 0 emitidos, ~123/mes muertos). Adjunto es una clasificación de interés VÁLIDA
+    # ("el detalle está en el anexo"); no debe morir aquí. Ver [[adjunto-fn-lever]].
+    if (r.interes == 1 and r.pactivo
+            and normalizar(r.pactivo) not in pactivos_norm
+            and r.pactivo not in PACTIVOS_NO_MATCH_DIRECTO):
         r = Resultado(
             interes=0,
             pactivo=None,
@@ -657,18 +700,24 @@ def _clasificar_fila_impl(
     if rubros:
         cod = (fila.get(COLUMNA_RUBRO[tabla]) or "").strip()
         if cod and cod in rubros:
-            return Resultado(
-                interes=0,
-                pactivo=None,
-                composicion=None,
-                presentacion=None,
-                confianza=0.97,
-                metodo="descarte_item",
-                razon=(
-                    "Rubro que el histórico descartó siempre "
-                    f"(>= {config.descarte_item_min_vistas} veces)."
-                ),
-            )
+            # CAMINO 2 (#4b): coherencia descripción↔rubro. Si la glosa es SOLO
+            # una referencia a anexo (sin producto) y el título es médico/farma,
+            # el rubro pudo ser mal asignado → no descartar, seguir a Claude.
+            if _glosa_solo_referencia(descripcion) and _TITULO_MEDICO.search(titulo or ""):
+                pass  # deja caer a las siguientes ramas (regla/modelo/Claude)
+            else:
+                return Resultado(
+                    interes=0,
+                    pactivo=None,
+                    composicion=None,
+                    presentacion=None,
+                    confianza=0.97,
+                    metodo="descarte_item",
+                    razon=(
+                        "Rubro que el histórico descartó siempre "
+                        f"(>= {config.descarte_item_min_vistas} veces)."
+                    ),
+                )
 
     # Reglas — pactivo inequívoco. Primero un pactivo COMBINADO del catálogo
     # (todos sus componentes en la descripción, sin importar el orden — el orden
