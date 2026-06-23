@@ -107,9 +107,14 @@ VETO_JABON_NO_FARMA = re.compile(
     r"neutro|para\s+ducha|infantil|kemikal))\b",
     re.IGNORECASE,
 )
-# Excepción al jabón: si la glosa también menciona "alcohol gel" o
-# "alcohol en gel", ese sí se clasifica como Alcohol Gel.
-_JABON_EXCEPCION = re.compile(r"alcohol\s+(?:en\s+)?gel", re.IGNORECASE)
+# Excepción al jabón: si la glosa menciona "alcohol gel" o un ANTISÉPTICO
+# FARMA NOMBRADO (clorhexidina/povidona), NO vetar — esos sí son de interés
+# (scrub quirúrgico). El antiséptico GENÉRICO sin principio nombrado sigue
+# descarte. Igual exclusión que el veto dinámico jabon (id=823).
+_JABON_EXCEPCION = re.compile(
+    r"alcohol\s+(?:en\s+)?gel|clorhexidin|clorexidin|povidona|yodopovidona",
+    re.IGNORECASE,
+)
 
 # INSUMOS QUIRÚRGICOS NO FARMA puntuales: stent + set de irrigación + azul
 # tripán + Endosolv + agente disolvente endodóntico.
