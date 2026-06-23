@@ -593,27 +593,18 @@ def _clasificar_fila_impl(
                     razon="Descripción idéntica a una OC real del catálogo Base.",
                 )
 
-    # Descarte por rubro — Item (compra_agil) / Cod_Onu (Licitaciones_diarias):
-    # rubro que el histórico humano descartó SIEMPRE (>= N vistas, 0 de interés).
-    rubros = (descartes or {}).get(tabla)
-    if rubros:
-        cod = (fila.get(COLUMNA_RUBRO[tabla]) or "").strip()
-        if cod and cod in rubros:
-            return Resultado(
-                interes=0,
-                pactivo=None,
-                composicion=None,
-                presentacion=None,
-                confianza=0.97,
-                metodo="descarte_item",
-                razon=(
-                    "Rubro que el histórico descartó siempre "
-                    f"(>= {config.descarte_item_min_vistas} veces)."
-                ),
-            )
-
     # Histórico — descripción idéntica ya clasificada por una persona. Un
     # DESCARTE del histórico con soporte bajo no se confía (ver buscar_en_historico).
+    #
+    # ORDEN (#4, medido 2026-06-23): el histórico va ANTES que descarte_item. Un
+    # match EXACTO de descripción etiquetado por un humano es de mayor especificidad
+    # que el descarte estadístico a nivel de RUBRO (descarte_item). Si esta glosa
+    # exacta ya fue marcada interés por una persona, no debe morir porque su rubro
+    # "siempre se descartó". Es estrictamente seguro: histórico=interés rescata;
+    # histórico=descarte → mismo resultado que descarte_item; histórico=None →
+    # descarte_item corre igual abajo. No agrega costo de Claude (es lookup en
+    # memoria). Medido: cruce_base 0 FN, histórico 6, descarte_item 30 FN/30d —
+    # de esos 30, 4 tenían match histórico-interés y este reorden los rescata.
     p = preclasificador.buscar_en_historico(tabla, descripcion, fila.get("id", 0))
     # Validar contra catálogo ACTIVO: el histórico puede devolver un pactivo que
     # ya fue REMOVIDO del catálogo (caso medido 2026-06-01: 'Guante' no está en
@@ -657,6 +648,27 @@ def _clasificar_fila_impl(
             metodo="historico",
             razon=f"Descripción idéntica ya clasificada por una persona ({p.soporte}x).",
         )
+
+    # Descarte por rubro — Item (compra_agil) / Cod_Onu (Licitaciones_diarias):
+    # rubro que el histórico humano descartó SIEMPRE (>= N vistas, 0 de interés).
+    # Va DESPUÉS de cruce_base e histórico (match exacto): solo descarta cuando no
+    # hubo precedente exacto que lo rescate (ver nota de orden #4 arriba).
+    rubros = (descartes or {}).get(tabla)
+    if rubros:
+        cod = (fila.get(COLUMNA_RUBRO[tabla]) or "").strip()
+        if cod and cod in rubros:
+            return Resultado(
+                interes=0,
+                pactivo=None,
+                composicion=None,
+                presentacion=None,
+                confianza=0.97,
+                metodo="descarte_item",
+                razon=(
+                    "Rubro que el histórico descartó siempre "
+                    f"(>= {config.descarte_item_min_vistas} veces)."
+                ),
+            )
 
     # Reglas — pactivo inequívoco. Primero un pactivo COMBINADO del catálogo
     # (todos sus componentes en la descripción, sin importar el orden — el orden
