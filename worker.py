@@ -31,6 +31,7 @@ from db import conexion_worker, reintentar
 from descarte_items import cargar_descartes
 from descarte_modelo import cargar_modelo_descarte
 from cascada import recargar_vetos_dinamicos
+from modelo_adjunto import cargar_modelo_adjunto
 from modelo_marcas import cargar_modelo_marcas
 from modelo_pactivo import cargar_modelo_pactivo
 import vetos_dinamicos as _vd
@@ -70,6 +71,7 @@ def cargar_recursos() -> dict:
         "modelo_descarte": cargar_modelo_descarte(),
         "modelo_pactivo": cargar_modelo_pactivo(),
         "modelo_marcas": cargar_modelo_marcas(),
+        "modelo_adjunto": cargar_modelo_adjunto(),
         "contexto": contexto,
     }
     # Pista cacheable de marcas comerciales para el prompt de Claude (R2 2026-06-02):
@@ -114,6 +116,7 @@ def ciclo(r: dict) -> int:
                     modelo_pactivo=r["modelo_pactivo"],
                     marcas_texto=r.get("marcas_texto", ""),
                     modelo_marcas=r.get("modelo_marcas"),
+                    modelo_adjunto=r.get("modelo_adjunto"),
                 )
                 if es_test:
                     reintentar(lambda: escritor.registrar_backtest(tabla, fila, resultado))

@@ -27,6 +27,7 @@ from typing import Optional
 import clasificador_claude as cc
 import cruce_base
 import descarte_modelo
+import modelo_adjunto as madj
 import modelo_marcas as mm
 import modelo_pactivo as mp
 import preclasificador
@@ -482,6 +483,7 @@ def clasificar_fila(
     modelo_pactivo=None,
     marcas_texto: str = "",
     modelo_marcas=None,
+    modelo_adjunto=None,
 ) -> Resultado:
     """Clasifica y aplica el VALIDADOR FINAL de composición: cualquier rama de la
     cascada (cruce verbatim, regla, modelo, Claude libre) puede dejar una comp que
@@ -495,7 +497,7 @@ def clasificar_fila(
     r = _clasificar_fila_impl(
         tabla, fila, taxonomia, pactivos_norm, descartes, cruce, combinaciones,
         modelo_descarte, ejemplos, indice_inverso, modelo_pactivo, marcas_texto,
-        modelo_marcas, ctx,
+        modelo_marcas, ctx, modelo_adjunto,
     )
     # FINAL GUARD del PACTIVO: una rama puede haber dejado un pactivo que ya
     # NO está en el catálogo activo (cliente desactivado, decisión de negocio).
@@ -567,6 +569,7 @@ def _clasificar_fila_impl(
     marcas_texto: str = "",
     modelo_marcas=None,
     ctx: "Optional[dict]" = None,
+    modelo_adjunto=None,
 ) -> Resultado:
     descripcion = fila.get("Descripcion")
     titulo = fila.get("Titulo")
@@ -691,6 +694,30 @@ def _clasificar_fila_impl(
             metodo="historico",
             razon=f"Descripción idéntica ya clasificada por una persona ({p.soporte}x).",
         )
+
+    # MODELO ADJUNTO (2026-07-23) — capa TEMPRANA, tras historico y ANTES de
+    # descarte_item/modelo_descarte. Clasificador binario '¿es Adjunto?' (el
+    # detalle del producto está en el anexo de la licitación). Con umbral ALTO
+    # (config.umbral_adjunto ≈ 0.864 → 97% precisión / 65% recall en CV) asigna
+    # Adjunto sólo cuando está muy seguro. Va aquí a propósito: RESUELVE EL HUECO B
+    # (los Adjunto que morían en descarte_item/modelo_descarte antes de llegar a
+    # Claude). Verificado 2026-07-23: el 97% de los Adjunto-verdaderos llegan a
+    # este punto (sólo 3% los resuelve antes historico/cruce, que son más
+    # autoritativos y deben ganar). Si el modelo NO está seguro, no hace nada y la
+    # cascada sigue: Claude queda como backstop recall-first. Ver [[adjunto-fn-lever]].
+    if modelo_adjunto is not None:
+        p_adj = madj.prob_adjunto(modelo_adjunto, titulo or "", descripcion or "")
+        if p_adj >= config.umbral_adjunto:
+            return Resultado(
+                interes=1,
+                pactivo="Adjunto",
+                composicion=None,
+                presentacion=None,
+                confianza=round(p_adj, 3),
+                metodo="modelo_adjunto",
+                razon=(f"Modelo de Adjunto (prob {p_adj:.2f} ≥ "
+                       f"{config.umbral_adjunto}): el detalle está en el anexo."),
+            )
 
     # Descarte por rubro — Item (compra_agil) / Cod_Onu (Licitaciones_diarias):
     # rubro que el histórico humano descartó SIEMPRE (>= N vistas, 0 de interés).

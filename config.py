@@ -75,6 +75,11 @@ class Config:
     #                queda como "posiblemente de interés" (amarillo, revisar)
     umbral_marcas_alto: float = float(os.getenv("UMBRAL_MARCAS_ALTO", "0.50"))
     umbral_marcas_bajo: float = float(os.getenv("UMBRAL_MARCAS_BAJO", "0.30"))
+    # Modelo de Adjunto (binario '¿es Adjunto?', capa temprana tras historico).
+    # Umbral ALTO a propósito: asigna Adjunto sólo con alta certeza para no robar
+    # ítems de pactivo específico. Calibrado CV 2026-07-23: 0.864 → 97% precisión
+    # / 65% recall. Si prob < umbral, no hace nada (cae a Claude, recall-first).
+    umbral_adjunto: float = float(os.getenv("UMBRAL_ADJUNTO", "0.864"))
     # Top-K pactivos del catálogo, ordenados por palabras de la descripción, que
     # se pasan a Claude como PISTA en el mensaje de usuario. No acota el
     # catálogo (sigue completo en el system prompt). 0 = desactivado.
