@@ -41,6 +41,28 @@ from api.ui import EMAILS_PACTIVOS_EXTRA  # noqa: E402
 from api.legacy import router as legacy_router  # noqa: E402
 from api.ui import layout as _layout  # noqa: E402
 
+# Starlette (≥0.35) limita a max_fields=1000 los campos de un formulario. La cola
+# de revisión (/revisar-hoja) envía hasta 200 filas × 7 campos ≈ 1.400 > 1.000, y
+# el POST fallaba con "Too many fields. Maximum number of fields is 1000". Subimos
+# el límite en ambos parsers (arreglo global de todos los forms masivos del panel).
+import starlette.formparsers as _formparsers  # noqa: E402
+
+
+def _subir_limite_form(_cls, _campos):
+    _orig_init = _cls.__init__
+
+    def __init__(self, *args, **kwargs):  # noqa: N807
+        for _k in _campos:
+            kwargs[_k] = 20_000
+        _orig_init(self, *args, **kwargs)
+
+    _cls.__init__ = __init__
+
+
+_subir_limite_form(_formparsers.FormParser, ("max_fields",))
+_subir_limite_form(_formparsers.MultiPartParser, ("max_fields", "max_files"))
+
+
 app = FastAPI(title="Clasificador IA — Pharmatender")
 app.include_router(auth_router)
 app.include_router(legacy_router)
