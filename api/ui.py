@@ -269,12 +269,14 @@ NAV = (
 
 # Quiénes pueden ver / usar el CRUD de pactivos_extra: los 3 del panel completo
 # + Carolina (clasificadora con permiso explícito de Yoryet 2026-06-03 para que
-# pueda agregar pactivos farma desde el panel cuando los necesite).
+# pueda agregar pactivos farma desde el panel cuando los necesite)
+# + Benjamín Saavedra (alta 2026-08-20, mismo alcance que Carolina).
 EMAILS_PACTIVOS_EXTRA = {
     "y.danoun@pharmatender.cl",
     "m.moraga@pharmatender.cl",
     "m.saavedra@pharmatender.cl",
     "c.burgos@pharmatender.cl",
+    "b.saavedra@pharmatender.cl",
 }
 
 # Quiénes ven el panel COMPLETO (resumen de gastos, estadísticas, backtest,
