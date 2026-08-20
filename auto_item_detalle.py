@@ -131,15 +131,26 @@ def parse_periodo(txt: str) -> tuple[int, int]:
 # ----------------------------------------------------------------- guardas ---
 
 def proceso_manual_vivo() -> bool:
-    """True si hay una subida manual de item-detalle en curso (no colisionar)."""
+    """True si hay una subida manual de item-detalle en curso (no colisionar).
+
+    OJO: el panel reutiliza ESTE mismo .pid cuando dispara la corrida automatica
+    desde el boton "Cargar ahora" (lo escribe justo despues del Popen). Si no
+    ignoraramos nuestro propio PID (y el del proceso que nos lanzo), la corrida
+    se auto-bloquearia y terminaria en 3 segundos sin importar nada.
+    """
     pf = TEMP_DIR / ".item-detalle.pid"
     if not pf.exists():
         return False
     try:
         pid = int(pf.read_text().strip())
+    except (ValueError, OSError):
+        return False
+    if pid in (os.getpid(), os.getppid()):
+        return False
+    try:
         os.kill(pid, 0)
         return True
-    except (ValueError, OSError, ProcessLookupError):
+    except OSError:
         return False
 
 
