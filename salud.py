@@ -118,11 +118,18 @@ def metricas_host() -> dict:
 
 # --- Métricas: CONTAINERS --------------------------------------------------
 def metricas_containers() -> dict:
-    """Estado de los 3 containers + sus restart counts."""
-    esperados = ("ia-mp-worker-1", "ia-mp-panel-1", "ia-mp-backtest-1")
+    """Estado de los containers vivos + sus restart counts.
+
+    `backtest` corre bajo el perfil de compose ["backtest"], asi que por defecto
+    NO existe (se apago a proposito: gastaba API sin control). Solo se vigila si
+    el container esta creado; si no, no es una caida y no debe alertar.
+    """
+    esperados = ["ia-mp-worker-1", "ia-mp-panel-1"]
     out = {}
     ps = _sh("docker ps -a --format '{{.Names}}\\t{{.Status}}'").strip().splitlines()
     estados = dict(line.split("\t", 1) for line in ps if "\t" in line)
+    if "ia-mp-backtest-1" in estados:
+        esperados.append("ia-mp-backtest-1")
     for c in esperados:
         st = estados.get(c, "MISSING")
         out[c] = {"status": st, "up": st.startswith("Up")}
@@ -307,9 +314,11 @@ def evaluar(snap: dict) -> list[str]:
         if a24 < a7 - 3:
             alertas.append(f"Drift accuracy pact: 24h={a24:.1f}% vs 7d={a7:.1f}% (cae >3pt)")
 
-    # último backtest hace > 30 min → backtest container colgado
+    # último backtest hace > 30 min → backtest container colgado. Solo aplica si
+    # el container existe: con el perfil apagado no hay backtest que se atrase.
     ult = bt.get("ultimo_registro", {}).get("ts")
-    if ult and (datetime.now() - ult) > timedelta(minutes=30):
+    bt_existe = "ia-mp-backtest-1" in snap["containers"]
+    if bt_existe and ult and (datetime.now() - ult) > timedelta(minutes=30):
         alertas.append(f"Último backtest hace {datetime.now()-ult} (umbral 30 min)")
 
     return alertas
@@ -415,7 +424,7 @@ def acciones_guardrail(snap: dict, alertas: list[str]) -> list[str]:
     hechas: list[str] = []
     # Cost guardrail: si test 7d > presupuesto y backtest está vivo, lo detiene
     if snap["costo"]["ult_7d_test"] > BUDGET_BACKTEST:
-        bt_up = snap["containers"]["ia-mp-backtest-1"]["up"]
+        bt_up = snap["containers"].get("ia-mp-backtest-1", {}).get("up", False)
         if bt_up:
             r = _sh("cd /opt/ia-mp && docker compose stop backtest 2>&1", timeout=30)
             hechas.append(f"docker compose stop backtest  →  {r.strip() or 'OK'}")

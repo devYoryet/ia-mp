@@ -48,5 +48,13 @@ jobs:
             cd /opt/ia-mp
             git fetch origin main
             git reset --hard origin/main
+            # Purga ANTES de construir. Cada build deja la imagen anterior como
+            # dangling (~3 GB) y nadie las borraba: el 2026-08-20 llegaron a 82 GB,
+            # el disco toco 91% y el build murio a la mitad dejando el worker en
+            # estado Created (clasificador caido). Es idempotente y no toca nada
+            # que este en uso por un container.
+            docker image prune -f || true
+            docker builder prune -f --filter until=168h || true
+            df -h / | tail -1
             docker compose up -d --build
             docker compose ps
