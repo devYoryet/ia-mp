@@ -109,25 +109,45 @@ def descargar_actas(cn_c, licitaciones: list[tuple[str, str]], limite_minutos: f
     return res
 
 
+def con_acta(cn_c, codigos) -> set[str]:
+    """Licitaciones de `codigos` que ya tienen filas en Licitaciones (por índice).
+
+    No usar EXISTS/NOT EXISTS contra Licitaciones en un WHERE de listado_api:
+    MySQL 8 lo resuelve como semijoin LooseScan sobre todo el índice y, en un
+    UPDATE, bloquea listado_api completo durante minutos (medido 2026-09-16:
+    >140 s para 27 candidatas, bloqueando al proceso diario)."""
+    out: set[str] = set()
+    for trozo in bd.trozos(sorted(set(codigos)), 500):
+        marcas, vals = bd.en_lista(trozo)
+        out |= {a for (a,) in bd.todos(
+            cn_c, f"SELECT DISTINCT ADQUISICION FROM {bd.DB_ADJ}.Licitaciones WHERE ADQUISICION IN ({marcas})", vals)}
+    return out
+
+
 def pendientes_actas(cn_c, desde: str, hasta: str) -> list[tuple[str, str]]:
-    return bd.todos(
+    candidatas = bd.todos(
         cn_c,
-        f"""SELECT licitacion, fecha_descarga FROM {bd.DB_ADJ}.listado_api l
-            WHERE estado = 0 AND fecha_descarga BETWEEN %s AND %s
-              AND NOT EXISTS (SELECT 1 FROM {bd.DB_ADJ}.Licitaciones x WHERE x.ADQUISICION = l.licitacion)
-            ORDER BY fecha_descarga""",
+        f"""SELECT licitacion, fecha_descarga FROM {bd.DB_ADJ}.listado_api
+            WHERE estado = 0 AND fecha_descarga BETWEEN %s AND %s ORDER BY fecha_descarga""",
         (desde, hasta))
+    ya = con_acta(cn_c, [c[0] for c in candidatas])
+    return [c for c in candidatas if c[0] not in ya]
 
 
 def reconciliar_marcas(cn_c, desde: str, hasta: str, log=print) -> int:
     """estado=0 que ya tienen filas -> estado=1 (medido 15-09: 10.935 así)."""
-    with cn_c.cursor() as cur:
-        n = cur.execute(
-            f"""UPDATE {bd.DB_ADJ}.listado_api l SET l.estado = 1
-                WHERE l.estado = 0 AND l.fecha_descarga BETWEEN %s AND %s
-                  AND EXISTS (SELECT 1 FROM {bd.DB_ADJ}.Licitaciones x WHERE x.ADQUISICION = l.licitacion)""",
-            (desde, hasta))
-    cn_c.commit()
+    candidatas = bd.todos(
+        cn_c,
+        f"SELECT id, licitacion FROM {bd.DB_ADJ}.listado_api WHERE estado = 0 AND fecha_descarga BETWEEN %s AND %s",
+        (desde, hasta))
+    ya = con_acta(cn_c, [c[1] for c in candidatas])
+    ids = [c[0] for c in candidatas if c[1] in ya]
+    n = 0
+    for trozo in bd.trozos(ids, 500):
+        marcas, vals = bd.en_lista(trozo)
+        with cn_c.cursor() as cur:
+            n += cur.execute(f"UPDATE {bd.DB_ADJ}.listado_api SET estado = 1 WHERE estado = 0 AND id IN ({marcas})", vals)
+        cn_c.commit()
     if n:
         log(f"   listado: {n} marcas estado=0 con acta ya descargada -> estado=1")
     return n
