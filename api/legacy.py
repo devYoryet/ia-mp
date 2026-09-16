@@ -156,6 +156,18 @@ MODULOS: dict[str, Modulo] = {
         finalizadores=("TERMINADA CON EXITO", "ERROR CRÍTICO", "FIN"),
         emoji="📄",
     ),
+    "cierre-adjudicadas": Modulo(
+        slug="cierre-adjudicadas",
+        titulo="Cierre Adjudicadas completo",
+        descripcion="Cierre mensual de licitaciones adjudicadas: listado y actas contra la API de "
+                    "Mercado Público, resumen, cruce OC (consulta5) y prime, con validación fila a fila.",
+        script="../cierre_adjudicadas_completo.py",
+        log="cierre_adjudicadas.log",
+        accept="",
+        args=lambda path, nombre: [],
+        finalizadores=("CIERRE ADJUDICADAS TERMINADO", "ERROR CRITICO"),
+        emoji="🏁",
+    ),
     "cenabast": Modulo(
         slug="cenabast",
         titulo="Subida Cenabast",
@@ -360,6 +372,211 @@ def _lanzar_auto(periodo: str | None) -> int:
     return proc.pid
 
 
+# ================================================ CIERRE ADJUDICADAS ===
+# Cierre mensual de licitaciones adjudicadas (cierre_adjudicadas_completo.py).
+# El proceso escribe su log en TEMP_DIR/cierre_adjudicadas.log y un reporte JSON
+# por mes en TEMP_DIR/cierre_adjudicadas/reportes/; el panel solo lee esos
+# archivos (no consulta las BD) y lanza el proceso.
+
+CIERRE_SCRIPT = Path(__file__).resolve().parent.parent / "cierre_adjudicadas_completo.py"
+CIERRE_DIR = TEMP_DIR / "cierre_adjudicadas"
+# Lanzar el cierre escribe en clásico, OC y prime: solo el panel completo.
+EMAILS_CIERRE = {
+    "y.danoun@pharmatender.cl",
+    "m.moraga@pharmatender.cl",
+    "m.saavedra@pharmatender.cl",
+}
+VALIDACIONES_CIERRE = (
+    ("V1", "Días descargados"),
+    ("V2", "Listado vs API"),
+    ("V3", "Actas descargadas"),
+    ("V4", "Actas completas (API)"),
+    ("V5", "Licitaciones prime"),
+    ("V6", "Resumen 6 tablas"),
+    ("V7", "OC consulta3/5"),
+    ("V8", "Prime consulta5"),
+    ("V9", "Fecha prime"),
+)
+
+
+def _meses_cierre(n: int = 6) -> list[dict]:
+    """Últimos n meses cerrables (desde el anterior hacia atrás) con su último reporte."""
+    import json
+
+    out = []
+    for (y, m) in _meses_recientes(n + 1)[1:]:
+        clave = f"{y}-{m:02d}"
+        rep = None
+        try:
+            rep = json.loads((CIERRE_DIR / "reportes" / f"mes_{clave}.json").read_text())
+        except (OSError, ValueError):
+            pass
+        sello = TEMP_DIR / f".cierre_adjudicadas_{y}{m:02d}.done"
+        out.append({
+            "mes": clave,
+            "periodo": f"{MESES_ES[m]} {y}",
+            "reporte": rep,
+            "sello": sello.read_text().strip() if sello.exists() else None,
+        })
+    return out
+
+
+def _lanzar_cierre(modo: str, mes: str, forzar: bool, quien: str) -> int:
+    log_path = _log_file("cierre-adjudicadas")
+    log_path.write_text(
+        f"[{datetime.now().isoformat(timespec='seconds')}] Disparo manual por {quien}: "
+        f"modo={modo} mes={mes}{' (forzado)' if forzar else ''}\n"
+    )
+    args = [sys.executable, "-u", str(CIERRE_SCRIPT), "--modo", modo, "--mes", mes]
+    if forzar:
+        args.append("--forzar")
+    # stdout/stderr al mismo log: si el script falla antes de abrir su propio
+    # log (p. ej. un import), el error igual se ve en la consola del panel.
+    fh = open(log_path, "a", buffering=1)
+    proc = subprocess.Popen(  # noqa: S603
+        args,
+        stdout=fh,
+        stderr=subprocess.STDOUT,
+        cwd=str(CIERRE_SCRIPT.parent),
+        env={**os.environ, "PYTHONUNBUFFERED": "1", "CIERRE_SIN_STDOUT": "1"},
+        start_new_session=True,
+    )
+    _pid_file("cierre-adjudicadas").write_text(str(proc.pid))
+    return proc.pid
+
+
+_JS_CIERRE = """
+(function() {
+  const BASE = '/legacy/cierre-adjudicadas';
+  const FIN = ['CIERRE ADJUDICADAS TERMINADO', 'ERROR CRITICO'];
+  const consola = document.getElementById('consola');
+  let intervalo = null;
+
+  function setLog(t) {
+    if (consola.innerText !== t) {
+      const cerca = (consola.scrollHeight - consola.scrollTop - consola.clientHeight) < 150;
+      consola.innerText = t;
+      if (cerca) consola.scrollTop = consola.scrollHeight;
+    }
+  }
+  function esLogin(t) { return t && (t.indexOf('login-card') >= 0 || t.indexOf('<title>Acceso') >= 0); }
+  function terminado(t) { const u = (t || '').toUpperCase(); return FIN.some(f => u.includes(f)); }
+
+  function seguir() {
+    if (intervalo) clearInterval(intervalo);
+    intervalo = setInterval(() => {
+      fetch(BASE + '/log?t=' + Date.now()).then(r => r.text()).then(t => {
+        if (esLogin(t)) { clearInterval(intervalo); setLog('Sesión expirada: recarga la página (F5).'); return; }
+        setLog(t);
+        if (terminado(t)) { clearInterval(intervalo); setTimeout(() => location.reload(), 2500); }
+      }).catch(() => {});
+    }, 1000);
+  }
+
+  const TEXTOS = {
+    'validar': 'Validar (solo lectura, sin API)',
+    'validar-api': 'Validar con la API de Mercado Público (solo lectura; la primera vez tarda ~1,5 h)',
+    'cierre': 'EJECUTAR EL CIERRE (escribe en clásico, OC y prime)'
+  };
+  window.lanzarCierre = async function(modo, mes, forzar) {
+    if (!confirm(TEXTOS[modo] + ' para ' + mes + (forzar ? ' (repetir, el mes ya tenía sello)' : '') + '?')) return;
+    const fd = new FormData();
+    fd.append('modo', modo); fd.append('mes', mes); fd.append('forzar', forzar ? '1' : '');
+    const r = await fetch(BASE + '/ejecutar', {method: 'POST', body: fd});
+    if (!r.ok) { alert('No se pudo iniciar (HTTP ' + r.status + '): ' + (await r.text())); return; }
+    setLog('Iniciando ' + modo + ' ' + mes + '...');
+    seguir();
+  };
+  window.detenerCierre = async function() {
+    if (!confirm('¿Detener el proceso? Los pasos ya confirmados quedan escritos; los demás se repiten en la próxima corrida.')) return;
+    await fetch(BASE + '/detener', {method: 'POST'});
+    if (intervalo) clearInterval(intervalo);
+  };
+
+  fetch(BASE + '/log?t=' + Date.now()).then(r => r.text()).then(t => {
+    if (t && !esLogin(t) && !terminado(t) && t.indexOf('Esperando inicio') < 0) seguir();
+  }).catch(() => {});
+})();
+"""
+
+
+def _vista_cierre(usuario: dict | None) -> str:
+    puede = (((usuario or {}).get("email") or "").strip().lower() in EMAILS_CIERRE)
+    log_path = _log_file("cierre-adjudicadas")
+    log_inicial = ""
+    if log_path.exists():
+        try:
+            log_inicial = log_path.read_text(errors="replace")
+        except OSError:
+            pass
+
+    cab = "".join(f"<th title='{escape(t)}'>{i}</th>" for i, t in VALIDACIONES_CIERRE)
+    filas = ""
+    for it in _meses_cierre(6):
+        rep = it["reporte"] or {}
+        por_id = {r["id"]: r for r in rep.get("resultados", [])}
+        celdas = ""
+        for vid, titulo in VALIDACIONES_CIERRE:
+            r = por_id.get(vid)
+            est = (r or {}).get("estado", "omitida")
+            icono = {"ok": "✓", "falla": "✗", "aviso": "!", "omitida": "·"}.get(est, "·")
+            tip = f"{titulo}: {(r or {}).get('resumen') or 'sin datos'}"
+            celdas += f"<td class='v {est}' title='{escape(tip)}'>{icono}</td>"
+        if rep:
+            corrida = f"{escape(rep.get('modo', ''))} · {escape((rep.get('fin') or '')[:16].replace('T', ' '))}"
+        else:
+            corrida = "sin validar"
+        sello = f"<span class='st ok' title='{escape(it['sello'])}'>cerrado</span>" if it["sello"] else "<span class='st falta'>abierto</span>"
+        botones = ""
+        if puede:
+            mes = it["mes"]
+            forzar = "true" if it["sello"] else "false"
+            botones = (
+                f"<button type=button class=sec onclick=\"lanzarCierre('validar','{mes}',false)\">Validar</button> "
+                f"<button type=button class=sec onclick=\"lanzarCierre('validar-api','{mes}',false)\">Validar + API</button> "
+                f"<button type=button onclick=\"lanzarCierre('cierre','{mes}',{forzar})\">"
+                f"{'Repetir cierre' if it['sello'] else 'Ejecutar cierre'}</button>"
+            )
+        filas += (f"<tr><td><b>{escape(it['periodo'])}</b></td><td>{sello}</td>{celdas}"
+                  f"<td class=corrida>{corrida}</td><td class=acc>{botones}</td></tr>")
+
+    btn_detener = "<button type=button class=peligro onclick='detenerCierre()'>■ Detener</button>" if puede else ""
+    leyenda = "".join(f"<li><b>{i}</b> {escape(t)}</li>" for i, t in VALIDACIONES_CIERRE)
+    cuerpo = f"""
+<style>
+  table.cierre {{ width:100%; border-collapse:collapse; font-size:13.5px; margin:8px 0 6px; }}
+  table.cierre th, table.cierre td {{ padding:7px 8px; border-bottom:1px solid rgba(120,140,170,.18); text-align:left; }}
+  table.cierre th {{ font-size:11.5px; text-transform:uppercase; letter-spacing:.4px; color:#6b7689; }}
+  td.v {{ text-align:center; font-weight:700; cursor:help; }}
+  td.v.ok {{ color:#1a9d5a; }} td.v.falla {{ color:#c0392b; }} td.v.aviso {{ color:#b8860b; }} td.v.omitida {{ color:#9aa3b2; }}
+  td.corrida {{ font-size:12px; color:#6b7689; white-space:nowrap; }}
+  td.acc button {{ margin:2px 0; }}
+  .st {{ font-weight:600; font-size:12.5px; }} .st.ok {{ color:#1a9d5a; }} .st.falta {{ color:#c0392b; }}
+  ul.leyenda {{ columns:3; font-size:12.5px; color:#6b7689; margin:6px 0 18px; }}
+</style>
+<h1>🏁 Cierre Adjudicadas completo</h1>
+<div class=aviso>Cierra el mes de licitaciones adjudicadas de Mercado Público y deja
+<b>clásico, OC y prime</b> alineados: completa el listado y las actas contra la API, recalcula el
+resumen (6 tablas), corre el cruce del OC (consulta1/3/5), publica consulta5 y la fila de
+<code>test_matias.Fecha</code> en prime, y repara los meses anteriores que no calcen.
+Corre solo el día 1 de cada mes y repasa el día 15 (foto de publicados/cerrados, como el batch histórico). Pasa el cursor sobre cada ✓/✗ para ver el detalle.
+<b>Validar</b> no escribe nada.</div>
+<table class=cierre>
+<thead><tr><th>Mes</th><th>Estado</th>{cab}<th>Última corrida</th><th>Acciones</th></tr></thead>
+<tbody>{filas}</tbody>
+</table>
+<ul class=leyenda>{leyenda}</ul>
+
+<h2>Consola de salida</h2>
+<div style='margin:0 0 8px'>
+  {btn_detener}
+  <a href='/legacy/cierre-adjudicadas/descargar-log'><button type=button class=sec>⬇ Descargar log (.txt)</button></a>
+</div>
+<div id=consola class=consola>{escape(log_inicial) or 'Esperando ejecución...'}</div>
+<script>{_JS_CIERRE}</script>
+"""
+    return layout("Cierre Adjudicadas completo", cuerpo, usuario=usuario)
+
 # ============================================================== ÍNDICE ===
 
 @router.get("", response_class=HTMLResponse)
@@ -384,6 +601,8 @@ def indice(request: Request) -> str:
 # ============================================================== VISTA ====
 
 def _vista_modulo(slug: str, usuario: dict | None = None) -> str:
+    if slug == "cierre-adjudicadas":
+        return _vista_cierre(usuario)
     mod = _mod(slug)
     log_path = _log_file(slug)
     log_inicial = ""
@@ -656,6 +875,29 @@ def item_detalle_estado_meses(n: int = 6):
     return JSONResponse(_estado_meses(min(max(n, 1), 24)))
 
 
+@router.post("/cierre-adjudicadas/ejecutar")
+async def cierre_ejecutar(request: Request, modo: str = Form(...), mes: str = Form(...),
+                          forzar: str = Form(default="")):
+    usuario = usuario_actual(request) or {}
+    if (usuario.get("email") or "").strip().lower() not in EMAILS_CIERRE:
+        raise HTTPException(403, "Solo administradores pueden lanzar el cierre.")
+    if modo not in ("validar", "validar-api", "cierre") or not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", mes):
+        raise HTTPException(400, "modo o mes inválido")
+    pf = _pid_file("cierre-adjudicadas")
+    try:
+        if pf.exists() and _proceso_vivo(int(pf.read_text().strip())):
+            raise HTTPException(409, "Ya hay un cierre de adjudicadas en curso.")
+    except (ValueError, OSError):
+        pass
+    pid = _lanzar_cierre(modo, mes, forzar == "1", usuario.get("email") or "?")
+    return {"ok": True, "pid": pid}
+
+
+@router.get("/cierre-adjudicadas/meses")
+def cierre_meses(n: int = 6):
+    return JSONResponse(_meses_cierre(min(max(n, 1), 24)))
+
+
 @router.get("/{slug}", response_class=HTMLResponse)
 def vista(request: Request, slug: str) -> str:
     return _vista_modulo(slug, usuario=usuario_actual(request))
@@ -672,6 +914,8 @@ async def upload_chunk(
     filename: str = Form(...),
 ):
     mod = _mod(slug)
+    if not mod.accept:
+        raise HTTPException(404, "Este módulo no recibe archivos")
     # Sanea el nombre: solo basename, sin path traversal.
     nombre = os.path.basename(filename)
     if not nombre or nombre in (".", ".."):

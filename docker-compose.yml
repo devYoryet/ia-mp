@@ -36,8 +36,12 @@ services:
     image: clasificador-ia:latest
     command: uvicorn api.main:app --host 0.0.0.0 --port 8800
     env_file: .env
-    ports:
-      - "8800:8800"
+    # Red del HOST (antes ports "8800:8800"): el Cierre Adjudicadas completo
+    # (/legacy/cierre-adjudicadas) usa el MySQL local de gestor_oc, que solo
+    # acepta root@localhost/127.0.0.1. Desde la red de Docker responde 1130
+    # "Host '172.18.0.3' is not allowed" (medido 2026-09-16). nginx sigue
+    # apuntando a 127.0.0.1:8800; clásico y prime se alcanzan igual.
+    network_mode: host
     # Carpeta de trabajo de los módulos Legacy: la misma que usaba Laravel en
     # gestor_oc (chunks, .log, reportes). En el host vive aquí desde siempre.
     # /app/pending: outbox de aprobaciones que NO pudieron escribirse a clásico
