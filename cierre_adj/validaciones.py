@@ -158,15 +158,17 @@ def v3_actas(cn_c, mes: str) -> Resultado:
 # ------------------------------------------------------------------ V4 ---
 
 def items_adjudicados_bd(cn_c, codigos) -> dict:
-    out = {c: 0 for c in codigos}
+    """licitación -> conjunto de números de ítem con alguna fila 'Adjudicada'."""
+    out: dict = {c: set() for c in codigos}
     for trozo in bd.trozos(sorted(codigos), 500):
         marcas, vals = bd.en_lista(trozo)
-        for adq, n in bd.todos(
+        for adq, num in bd.todos(
             cn_c,
-            f"""SELECT ADQUISICION, COUNT(DISTINCT CASE WHEN ESTADO = 'Adjudicada' THEN NUMPROD END)
-                FROM {bd.DB_ADJ}.Licitaciones WHERE ADQUISICION IN ({marcas}) GROUP BY ADQUISICION""",
+            f"""SELECT DISTINCT ADQUISICION, NUMPROD FROM {bd.DB_ADJ}.Licitaciones
+                WHERE ESTADO = 'Adjudicada' AND ADQUISICION IN ({marcas})""",
             vals):
-            out[adq] = int(n)
+            if num is not None:
+                out.setdefault(adq, set()).add(int(num))
     return out
 
 
@@ -174,7 +176,7 @@ def v4_actas_vs_api(cn_c, codigos: list[str], cache: Path | None = None, log=pri
                     latido=None) -> Resultado:
     """Compara ítems adjudicados API vs BD. Las coincidencias se cachean (un acta
     completa no cambia) para no repetir ~900 llamadas en cada validación."""
-    r = Resultado("V4", "Actas completas (ítems adjudicados API == BD)")
+    r = Resultado("V4", "Actas completas (ningún ítem adjudicado en la API falta en la BD)")
     if not con_api:
         r.resumen = "sin consultar la API (usar 'validar con API')"
         return r
@@ -185,8 +187,10 @@ def v4_actas_vs_api(cn_c, codigos: list[str], cache: Path | None = None, log=pri
         except (OSError, ValueError):
             ok_previos = {}
     bd_items = items_adjudicados_bd(cn_c, codigos)
-    incompletas, no_api, verificadas = [], [], 0
-    pendientes = [c for c in codigos if ok_previos.get(c) != bd_items.get(c)]
+    incompletas, no_api, api_atrasada, verificadas = [], [], [], 0
+    # En caché se guarda cuántos ítems adjudicados tenía la BD al verificar: si
+    # cambia, se vuelve a consultar.
+    pendientes = [c for c in codigos if ok_previos.get(c) != len(bd_items.get(c, ()))]
     log(f"   V4: {len(codigos)} licitaciones; {len(codigos) - len(pendientes)} ya verificadas antes; consulto {len(pendientes)} en la API")
     for i, cod in enumerate(pendientes, 1):
         try:
@@ -197,12 +201,16 @@ def v4_actas_vs_api(cn_c, codigos: list[str], cache: Path | None = None, log=pri
         if det is None:
             no_api.append({"codigo": cod, "error": "la API no la conoce"})
             continue
-        if det["items_adjudicados"] == bd_items.get(cod, 0):
-            ok_previos[cod] = bd_items.get(cod, 0)
-            verificadas += 1
-        else:
-            incompletas.append({"codigo": cod, "api": det["items_adjudicados"], "bd": bd_items.get(cod, 0),
+        api_set, bd_set = set(det["adjudicados"]), bd_items.get(cod, set())
+        faltan = sorted(api_set - bd_set)
+        if faltan:
+            incompletas.append({"codigo": cod, "items_faltantes": faltan[:50], "api": len(api_set), "bd": len(bd_set),
                                 "estado_api": det["estado"], "fecha_adjudicacion": det["fecha_adjudicacion"]})
+        else:
+            ok_previos[cod] = len(bd_set)
+            verificadas += 1
+            if bd_set - api_set:
+                api_atrasada.append({"codigo": cod, "api": len(api_set), "bd": len(bd_set)})
         if i % 25 == 0:
             if cache:
                 cache.parent.mkdir(parents=True, exist_ok=True)
@@ -213,10 +221,11 @@ def v4_actas_vs_api(cn_c, codigos: list[str], cache: Path | None = None, log=pri
     if cache:
         cache.parent.mkdir(parents=True, exist_ok=True)
         cache.write_text(json.dumps(ok_previos))
-    r.estado = "falla" if incompletas or no_api else "ok"
-    r.resumen = (f"{len(codigos)} verificadas contra la API; con diferencias {len(incompletas)}; "
-                 f"sin respuesta de la API {len(no_api)}")
-    r.detalle = {"incompletas": incompletas, "sin_api": no_api}
+    r.estado = "falla" if incompletas or no_api else ("aviso" if api_atrasada else "ok")
+    r.resumen = (f"{len(codigos)} verificadas contra la API; con ítems adjudicados que faltan en la BD: {len(incompletas)}; "
+                 f"sin respuesta de la API {len(no_api)}; "
+                 f"la API aún no informa adjudicaciones que el acta sí tiene: {len(api_atrasada)}")
+    r.detalle = {"incompletas": incompletas, "sin_api": no_api, "api_atrasada": api_atrasada}
     return r
 
 

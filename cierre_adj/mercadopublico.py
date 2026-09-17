@@ -6,9 +6,11 @@ API (https://api.mercadopublico.cl, ticket en MP_API_TICKET):
     NO estaban en listado_api (el listado diario del portal las perdió). Es la
     segunda fuente del listado.
   * detalle: licitaciones.json?codigo=X trae Items con su Adjudicacion.
-    Medido en 7 licitaciones (incluida una de 516 ítems): los ítems con
-    adjudicación de la API == ítems 'Adjudicada' descargados del acta. Es la
-    prueba de que un acta quedó completa.
+    Sirve para detectar actas INCOMPLETAS: ítems que la API informa
+    adjudicados y que no están en la BD. Al revés no: la API a veces no trae
+    la adjudicación de ítems ya adjudicados (medido 2026-09-16: 2026-35-LR26
+    "Adjudicada" con 0 ítems en la API y 84 en el acta; otras cambiaban de una
+    consulta a otra). En agosto 2026, 0 de 872 actas tenían ítems solo en la API.
   * Responde 429 si las llamadas van seguidas: pausa MP_API_PAUSA (6 s) y
     espera creciente ante 429.
 
@@ -98,7 +100,11 @@ def detalle(codigo: str) -> dict | None:
         "estado": lic.get("Estado"),
         "fecha_adjudicacion": ((lic.get("Fechas") or {}).get("FechaAdjudicacion") or "")[:10] or None,
         "items": len(items),
-        "items_adjudicados": sum(1 for it in items if it.get("Adjudicacion")),
+        # Número de ítem (Correlativo) de los que la API informa adjudicados. Se
+        # repite cuando un ítem tiene varias líneas: se compara como conjunto.
+        "adjudicados": sorted({int(float(it["Correlativo"])) for it in items
+                               if it.get("Adjudicacion") and (it["Adjudicacion"] or {}).get("RutProveedor")
+                               and it.get("Correlativo") is not None}),
     }
 
 
