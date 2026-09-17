@@ -24,6 +24,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse
@@ -424,7 +425,7 @@ def _meses_cierre(n: int = 6) -> list[dict]:
 def _lanzar_cierre(modo: str, mes: str, forzar: bool, quien: str) -> int:
     log_path = _log_file("cierre-adjudicadas")
     log_path.write_text(
-        f"[{datetime.now().isoformat(timespec='seconds')}] Disparo manual por {quien}: "
+        f"[{datetime.now(ZoneInfo('America/Santiago')).isoformat(timespec='seconds')[:19]}] Disparo manual por {quien}: "
         f"modo={modo} mes={mes}{' (forzado)' if forzar else ''}\n"
     )
     args = [sys.executable, "-u", str(CIERRE_SCRIPT), "--modo", modo, "--mes", mes]

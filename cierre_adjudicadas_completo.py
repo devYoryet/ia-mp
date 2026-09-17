@@ -70,7 +70,7 @@ _candado = None           # conexión que retiene GET_LOCK durante toda la corri
 
 
 def log(msg: str = "") -> None:
-    linea = f"[{datetime.now():%Y-%m-%d %H:%M:%S}] {msg}"
+    linea = f"[{datetime.now(v.ZONA):%Y-%m-%d %H:%M:%S}] {msg}"
     _lineas.append(linea)
     # Lanzado desde el panel, stdout ya va al mismo log: no duplicar.
     if not os.getenv("CIERRE_SIN_STDOUT"):
@@ -95,6 +95,22 @@ def _otro_proceso_vivo() -> int | None:
         return pid
     except OSError:
         return None
+
+
+def mantener_vivas(*conexiones) -> None:
+    """Reconecta si hace falta. El clásico tiene wait_timeout=1800: la
+    verificación contra la API tarda más de 30 min sin tocar la BD y la
+    conexión se caía (medido 2026-09-17: 2013 Lost connection a los 87 min)."""
+    global _candado
+    for cn in conexiones:
+        cn.ping(reconnect=True)
+    if _candado is not None:
+        antes = _candado.thread_id()
+        _candado.ping(reconnect=True)
+        if _candado.thread_id() != antes:
+            if bd.uno(_candado, "SELECT GET_LOCK('cierre_adjudicadas_completo', 0)")[0] != 1:
+                raise RuntimeError("se perdió el candado MySQL y otro cierre lo tomó")
+            log("   candado MySQL recuperado tras reconectar")
 
 
 def _sello(mes: str) -> Path:
@@ -197,17 +213,21 @@ def correr(a) -> int:
         esp_mes = v.esperado_consultas(C, mes)
         codigos = universo_v4(C, mes, esp_mes)
         log(f"-- Verificación de actas de {mes} contra la API ({len(codigos)} licitaciones)")
-        v4_mes = v.v4_actas_vs_api(C, codigos, cache / f"api_actas_ok_{mes}.json", log)
+        latido = lambda: mantener_vivas(C, P, O)  # noqa: E731
+        v4_mes = v.v4_actas_vs_api(C, codigos, cache / f"api_actas_ok_{mes}.json", log, latido=latido)
+        mantener_vivas(C, P, O)
         if a.modo == "cierre" and v4_mes.detalle.get("incompletas"):
             redescargar = [(x["codigo"], x.get("fecha_adjudicacion") or ini_mes) for x in v4_mes.detalle["incompletas"]]
             log(f"   {len(redescargar)} actas no calzan con la API: se vuelven a bajar")
             acciones.append({"paso": "actas incompletas", **pasos.descargar_actas(C, redescargar, None, log)})
-            v4_mes = v.v4_actas_vs_api(C, codigos, cache / f"api_actas_ok_{mes}.json", log)
+            v4_mes = v.v4_actas_vs_api(C, codigos, cache / f"api_actas_ok_{mes}.json", log, latido=latido)
+            mantener_vivas(C, P, O)
         log(f"   [{v4_mes.estado.upper():5}] V4 {v4_mes.resumen}")
 
     if a.modo == "cierre":
         # 4. publicación por mes (el mes cerrado primero)
         for m in meses:
+            mantener_vivas(C, P, O)
             log(f"-- Publicación {m}")
             n = pasos.sincronizar_prime(C, P, m, log)
             if n:
@@ -243,6 +263,7 @@ def correr(a) -> int:
     estado_mes = "ok"
     por_mes: dict = {}
     for m in meses:
+        mantener_vivas(C, P, O)
         log(f"-- Validación {m}")
         res, _ = validar_mes(C, P, O, m, mes_cerrado=(m == mes and a.modo == "cierre"),
                              api_mes=api_mes if m == mes else None, v4=v4_mes if m == mes else None)

@@ -22,6 +22,7 @@ import json
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from cierre_adj import bd, mercadopublico as mp, reglas
 
@@ -169,7 +170,8 @@ def items_adjudicados_bd(cn_c, codigos) -> dict:
     return out
 
 
-def v4_actas_vs_api(cn_c, codigos: list[str], cache: Path | None = None, log=print, con_api: bool = True) -> Resultado:
+def v4_actas_vs_api(cn_c, codigos: list[str], cache: Path | None = None, log=print, con_api: bool = True,
+                    latido=None) -> Resultado:
     """Compara ítems adjudicados API vs BD. Las coincidencias se cachean (un acta
     completa no cambia) para no repetir ~900 llamadas en cada validación."""
     r = Resultado("V4", "Actas completas (ítems adjudicados API == BD)")
@@ -201,11 +203,13 @@ def v4_actas_vs_api(cn_c, codigos: list[str], cache: Path | None = None, log=pri
         else:
             incompletas.append({"codigo": cod, "api": det["items_adjudicados"], "bd": bd_items.get(cod, 0),
                                 "estado_api": det["estado"], "fecha_adjudicacion": det["fecha_adjudicacion"]})
-        if cache and i % 25 == 0:
-            cache.parent.mkdir(parents=True, exist_ok=True)
-            cache.write_text(json.dumps(ok_previos))
-        if i % 100 == 0:
+        if i % 25 == 0:
+            if cache:
+                cache.parent.mkdir(parents=True, exist_ok=True)
+                cache.write_text(json.dumps(ok_previos))
             log(f"   V4: {i}/{len(pendientes)} consultadas, {len(incompletas)} con diferencias")
+            if latido:
+                latido()  # mantiene vivas las conexiones: el clásico corta a los 30 min sin uso
     if cache:
         cache.parent.mkdir(parents=True, exist_ok=True)
         cache.write_text(json.dumps(ok_previos))
@@ -310,5 +314,9 @@ def resumen_estados(resultados: list[Resultado]) -> str:
     return "falla" if "falla" in estados else ("aviso" if "aviso" in estados else "ok")
 
 
+ZONA = ZoneInfo("America/Santiago")
+
+
 def ahora() -> str:
-    return datetime.now().isoformat(timespec="seconds")
+    # Hora de Chile: el contenedor está en UTC y el panel muestra esta hora.
+    return datetime.now(ZONA).replace(tzinfo=None).isoformat(timespec="seconds")
