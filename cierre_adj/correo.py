@@ -1,17 +1,12 @@
-"""Correo de resumen del cierre (mismo canal que usaba el cierre de Windows:
-Gmail SMTP con licitaciones@pharmatender.cl). Si falta ALERT_EMAIL_PASSWORD
-no se envía y solo se informa en el log."""
+"""Resumen técnico del cierre (solo cuando falla). Se envía con correos.enviar:
+mismo remitente y prefijo "[Automático]" que los avisos de negocio."""
 
 from __future__ import annotations
 
 import html
 import os
-import smtplib
-import time
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
+import re
 
-REMITENTE = os.getenv("ALERT_EMAIL_SENDER", "licitaciones@pharmatender.cl")
 DESTINOS = [x.strip() for x in os.getenv(
     "ALERT_EMAIL_RECIPIENTS", "soporte.ti@pharmatender.cl,y.danoun@pharmatender.cl").split(",") if x.strip()]
 COLOR = {"ok": "#1e7e34", "aviso": "#b8860b", "falla": "#c82333", "omitida": "#777"}
@@ -41,24 +36,7 @@ def cuerpo_html(mes: str, estado: str, meses: dict, acciones: list, lineas_log: 
 
 
 def enviar(asunto: str, cuerpo: str, log=print) -> bool:
-    clave = os.getenv("ALERT_EMAIL_PASSWORD", "")
-    if not clave:
-        log("Correo de resumen NO enviado: falta ALERT_EMAIL_PASSWORD en el .env")
-        return False
-    msg = MIMEMultipart("alternative")
-    msg["Subject"], msg["From"], msg["To"] = asunto, REMITENTE, ", ".join(DESTINOS)
-    msg.attach(MIMEText(cuerpo, "html", "utf-8"))
-    for intento in range(1, 4):
-        try:
-            with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=60) as s:
-                s.login(REMITENTE, clave)
-                s.sendmail(REMITENTE, DESTINOS, msg.as_string())
-            log(f"Correo de resumen enviado a {', '.join(DESTINOS)}")
-            return True
-        except smtplib.SMTPAuthenticationError as exc:
-            log(f"Correo de resumen NO enviado: autenticación rechazada ({exc})")
-            return False
-        except Exception as exc:  # noqa: BLE001
-            log(f"Correo de resumen: intento {intento} falló ({exc})")
-            time.sleep(5)
-    return False
+    """Resumen técnico (solo cuando el cierre falla). Mismo emisor que los avisos de negocio."""
+    import correos
+    texto = re.sub(r"<[^>]+>", " ", cuerpo)
+    return correos.enviar(asunto, html.unescape(texto), ", ".join(DESTINOS), log)

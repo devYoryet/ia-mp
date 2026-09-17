@@ -51,6 +51,7 @@ import traceback
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
+import correos
 from cierre_adj import bd, correo, pasos, reglas, validaciones as v
 
 TEMP_DIR = Path(os.getenv("LEGACY_TEMP_DIR", "/host/storage/temp"))
@@ -281,10 +282,17 @@ def correr(a) -> int:
         _sello(mes).write_text(f"cerrado {v.ahora()} · estado {estado_mes}")
         log(f"Mes {mes} CERRADO ({estado_mes}). Sello escrito.")
     if a.modo == "cierre":
-        resumen_acciones = [{k: (len(val) if isinstance(val, list) and k in ("nuevas", "incompletas") else val)
-                             for k, val in x.items()} for x in acciones]
-        correo.enviar(f"Cierre Adjudicadas {mes}: {estado_mes.upper()}",
-                      correo.cuerpo_html(mes, estado_mes, por_mes, resumen_acciones, _lineas), log)
+        if estado_mes != "falla":
+            # Aviso a gerencia, una sola vez por mes y solo para el mes recién cerrado
+            # (reparar un mes antiguo o el repaso del día 15 no lo repiten).
+            if mes == bd.mes_anterior(datetime.now(v.ZONA).date()):
+                anio, num = (int(x) for x in mes.split("-"))
+                correos.aviso_cierre_adjudicadas(anio, num, log)
+        else:
+            resumen_acciones = [{k: (len(val) if isinstance(val, list) and k in ("nuevas", "incompletas") else val)
+                                 for k, val in x.items()} for x in acciones]
+            correo.enviar(f"Cierre Adjudicadas {mes}: {estado_mes.upper()}",
+                          correo.cuerpo_html(mes, estado_mes, por_mes, resumen_acciones, _lineas), log)
     log(f"{TOK_FIN} · mes {mes} · estado {estado_mes.upper()}")
     return 1 if estado_mes == "falla" else 0
 

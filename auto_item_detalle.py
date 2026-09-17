@@ -302,8 +302,9 @@ def drop_tabla(yyyymm: str, server: str) -> None:
             log(f"[WARN] no se pudo dropear `{yyyymm}` en {srv}: {exc}")
 
 
-def importar(csv_path: Path, yyyymm: str, server: str) -> None:
-    """Corre bin/ScriptCSV.py y tee su salida al log. Lanza si el primario no quedo OK."""
+def importar(csv_path: Path, yyyymm: str, server: str) -> set[str]:
+    """Corre bin/ScriptCSV.py y tee su salida al log. Lanza si el primario no quedo OK.
+    Devuelve los servidores que reportaron OK (primario y, si corrio, espejo)."""
     args = [
         sys.executable, "-u", str(SCRIPT_CSV),
         "--excel", str(csv_path),
@@ -320,19 +321,20 @@ def importar(csv_path: Path, yyyymm: str, server: str) -> None:
         text=True,
         bufsize=1,
     )
-    primario_ok = False
-    token_ok = f"=== {server.upper()}: OK ==="
+    ok: set[str] = set()
     for linea in proc.stdout:  # type: ignore[union-attr]
         linea = linea.rstrip("\n")
         if linea:
             log(linea)
-        if token_ok in linea:
-            primario_ok = True
+        for srv in ("clasico", "prime"):
+            if f"=== {srv.upper()}: OK ===" in linea:
+                ok.add(srv)
     proc.wait()
-    if not primario_ok:
+    if server not in ok:
         raise RuntimeError(
             f"ScriptCSV no reporto exito en el primario {server} (rc={proc.returncode})"
         )
+    return ok
 
 
 # -------------------------------------------------------------------- main ---
@@ -377,10 +379,17 @@ def main() -> int:
         csv_path = descomprimir(zip_path)
         validar(csv_path, year, month)
         drop_tabla(yyyymm, args.server)
-        importar(csv_path, yyyymm, args.server)
+        servidores_ok = importar(csv_path, yyyymm, args.server)
         marcador.write_text(
             f"importado {datetime.now().isoformat(timespec='seconds')} via auto_item_detalle"
         )
+        # Aviso a gerencia solo si quedo en AMBAS plataformas y es el mes recien
+        # cerrado (recargar un mes antiguo desde el panel no manda correo).
+        if {"clasico", "prime"} <= servidores_ok and (year, month) == periodo_anterior():
+            import correos
+            correos.aviso_item_detalle(year, month, log)
+        elif (year, month) == periodo_anterior():
+            log(f"Aviso por correo NO enviado: servidores OK = {sorted(servidores_ok)} (se requiere clasico y prime)")
         log(f"OK · periodo {yyyymm} importado y marcado como hecho. {TOK_OK}.")
     except Reintentable as exc:
         log(f"{TOK_ERR}: {exc}")
