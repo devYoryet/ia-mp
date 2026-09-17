@@ -333,6 +333,18 @@ def ejecutar_migracion():
             print(f"[INFO] ENVIANDO {len(df_normalizados)} REGISTROS NORMALIZADOS A CLÁSICO...")
             df_normalizados.to_sql(TABLA_VALIDADOS, engine_clasico, if_exists='append', index=False)
 
+        # Base del clásico = copia de la de prime (prime es la fuente y la edita).
+        # Antes solo recibía filas en adquisiciones_validadas y quedó en feb-2026.
+        print("[INFO] SINCRONIZANDO analisis_precios.Base DEL CLÁSICO DESDE PRIME...")
+        try:
+            sys.path.insert(0, os.path.dirname(DIRECTORIO_ACTUAL))
+            import cargas_legacy
+            cargas_legacy.sincronizar_base_adjudicaciones(log=print)
+            print("[OK] BASE DEL CLÁSICO SINCRONIZADA CON PRIME")
+        except Exception as e:
+            # Sin token de error aquí: el reporte (último token) debe seguir generándose.
+            print(f"[ALERTA] BASE DEL CLÁSICO NO SINCRONIZADA: {e}")
+
         fallos_totales = (fallos_1 or []) + (fallos_2 or [])
         verificar_integridad_total(df_completo, columnas_sql, engine, fallos_totales)
 
@@ -454,9 +466,9 @@ def scraping_tiempo_contrato(engine_prime, engine_clasico):
                             AND Tiempo_contrato IS NULL
                         """)
 
-                        conn_upd.execute(sql_web, {"t": valor_web, "num": num, "id": id_lic})
-
-                    with engine_prime.begin() as conn_upd:
+                        # `engine` (global) ES prime: antes se repetía el mismo UPDATE con
+                        # engine_prime y el clásico nunca se actualizaba. El clásico se
+                        # alinea al final con cargas_legacy.sincronizar_base_adjudicaciones.
                         conn_upd.execute(sql_web, {"t": valor_web, "num": num, "id": id_lic})
 
                     try:

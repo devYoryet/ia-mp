@@ -80,17 +80,10 @@ def _args_subida_td(path: Path, nombre: str) -> list[str]:
 
 
 def _args_importaciones(path: Path, nombre: str) -> list[str]:
-    # ImportOC.py extrae año/mes del nombre del archivo, igual que el controller.
-    nums = re.findall(r"\d+", nombre)
-    if len(nums) >= 2:
-        year = nums[0]
-        if len(year) == 2:
-            year = "20" + year
-        month = nums[1].zfill(2)
-        fecha = f"{year}-{month}-01"
-    else:
-        fecha = datetime.now().strftime("%Y-%m-01")
-    return ["--fecha", fecha, "--archivo", str(path)]
+    # El mes lo saca importaciones_completo.py del nombre (mes en español + año).
+    # Antes se pasaba --fecha tomando números del nombre: "Importaciones Julio
+    # 2026 v1" daba 2026-01-01 (el "1" de "v1").
+    return [str(path)]
 
 
 def _args_adjudicaciones(path: Path, nombre: str) -> list[str]:
@@ -126,23 +119,26 @@ MODULOS: dict[str, Modulo] = {
     "importaciones": Modulo(
         slug="importaciones",
         titulo="Importaciones",
-        descripcion="Carga del Excel mensual de importaciones (ImportOC).",
-        script="ImportOC.py",
+        descripcion="Carga del Excel mensual de importaciones: tabla del mes, farma y fecha en Clásico y Prime.",
+        script="importaciones_completo.py",
         log="importaciones.log",
         accept=".xlsm,.xlsx,.xls",
         args=_args_importaciones,
-        finalizadores=("FIN", "ERROR CRÍTICO"),
+        finalizadores=("FINALIZADO EXITOSAMENTE", "ERROR CRÍTICO"),
         emoji="📅",
     ),
     "adjudicaciones": Modulo(
         slug="adjudicaciones",
         titulo="Adjudicaciones",
-        descripcion="Carga del Excel de adjudicaciones; genera reporte de integridad.",
+        descripcion="Carga del Excel de adjudicaciones en Prime, alinea la Base del Clásico y genera reporte de integridad.",
         script="estructura_adj.py",
         log="adjudicaciones_master.log",
         accept=".xlsx,.xls",
         args=_args_adjudicaciones,
-        finalizadores=("[OK] REPORTE CREADO:", "ERROR CRÍTICO", "FIN"),
+        # Sin "FIN": la comparación es sin mayúsculas y "FIN" calzaba con
+        # "[OK] CARGA FINALIZADA", cortando el seguimiento antes del scraping.
+        finalizadores=("[OK] REPORTE CREADO:", "[ERROR] NO SE PUDO GENERAR EL REPORTE",
+                       "[ERROR CRITICO]", "ERROR CRÍTICO"),
         emoji="✍️",
         tiene_reporte=True,
     ),
@@ -177,7 +173,7 @@ MODULOS: dict[str, Modulo] = {
         log="cenabast.log",
         accept=".xlsx,.xls",
         args=_args_cenabast,
-        finalizadores=("FINALIZADO EXITOSAMENTE", "ERROR CRÍTICO"),
+        finalizadores=("FINALIZADO EXITOSAMENTE", "ERROR CRÍTICO", "ERROR CRITICO"),
         emoji="🏥",
     ),
 }

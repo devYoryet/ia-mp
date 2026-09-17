@@ -351,6 +351,18 @@ def main():
     else:
         print("\n[ALERTA] No se pudo determinar el ultimo mes (FECHASQL vacio).")
 
+    # El mes del nombre ('... Cenabast Julio 2026.xlsx') debe ser el ultimo mes con
+    # datos: si no calza se detiene ANTES del TRUNCATE (evita cargar el archivo equivocado).
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from cargas_legacy import periodo_desde_nombre
+    periodo_nombre = periodo_desde_nombre(path)
+    if periodo_nombre and dat_fecha and periodo_nombre.strftime("%Y-%m") != dat_fecha:
+        print(f"\nERROR CRITICO: el nombre del archivo dice {periodo_nombre:%Y-%m} pero el ultimo mes "
+              f"con datos es {dat_fecha}. No se cargo nada.")
+        return
+    if not periodo_nombre:
+        print("[ALERTA] El nombre del archivo no trae mes y año; se usa el ultimo mes con datos.")
+
     # Clasico primero; Prime solo si Clasico valido (mismo criterio que la TD).
     ok_clasico = migrar_base(engine_clasico, df, "CLASICO")
     ok_prime = False
