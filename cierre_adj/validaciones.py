@@ -242,10 +242,24 @@ def v5_prime_licitaciones(cn_c, cn_p, mes: str) -> Resultado:
     c, p = conteo_por_licitacion(cn_c, mes), conteo_por_licitacion(cn_p, mes)
     faltan = {k: (v, p.get(k, 0)) for k, v in c.items() if p.get(k, 0) < v}
     sobran = {k: (c.get(k, 0), v) for k, v in p.items() if v > c.get(k, 0)}
-    r.estado = "falla" if faltan else ("aviso" if sobran else "ok")
+    # Readjudicadas: prime conserva la adjudicación anterior con otra FECHASQL y las
+    # filas nuevas que repiten la clave UNICO no entran (medido: 425-2-LR25, prime
+    # 71 filas de 2025-05 + 36 de 2026-03; clásico 71 de 2026-03). No falta nada del
+    # mes en el total de la licitación: aviso, no falla.
+    readjudicadas = {}
+    ini, fin = bd.rango_mes(mes)
+    for adq in list(faltan):
+        total_p = bd.uno(cn_p, f"SELECT COUNT(*) FROM {bd.DB_ADJ}.Licitaciones WHERE ADQUISICION = %s", (adq,))[0]
+        otras = bd.uno(cn_p, f"""SELECT COUNT(*) FROM {bd.DB_ADJ}.Licitaciones
+                                 WHERE ADQUISICION = %s AND FECHASQL NOT BETWEEN %s AND %s""", (adq, ini, fin))[0]
+        if otras and total_p >= faltan[adq][0]:
+            readjudicadas[adq] = faltan.pop(adq)
+    r.estado = "falla" if faltan else ("aviso" if sobran or readjudicadas else "ok")
     r.resumen = (f"clásico {sum(c.values())} filas / {len(c)} licitaciones; prime {sum(p.values())} / {len(p)}; "
-                 f"licitaciones con filas de menos en prime {len(faltan)}; con filas de más {len(sobran)}")
-    r.detalle = {"faltan_en_prime": faltan, "sobran_en_prime": dict(list(sobran.items())[:50])}
+                 f"licitaciones con filas de menos en prime {len(faltan)}; con filas de más {len(sobran)}; "
+                 f"readjudicadas con la adjudicación anterior en prime {len(readjudicadas)}")
+    r.detalle = {"faltan_en_prime": faltan, "sobran_en_prime": dict(list(sobran.items())[:50]),
+                 "readjudicadas": readjudicadas}
     return r
 
 
