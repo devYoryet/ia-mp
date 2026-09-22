@@ -73,6 +73,8 @@ class Modulo:
     emoji: str
     # ¿genera reporte XLSX descargable?
     tiene_reporte: bool = False
+    # Sección del índice: "carga" (procesos de carga) o "parquet" (transformación).
+    categoria: str = "carga"
 
 
 def _args_subida_td(path: Path, nombre: str) -> list[str]:
@@ -152,6 +154,19 @@ MODULOS: dict[str, Modulo] = {
         args=_args_item_detalle,
         finalizadores=("TERMINADA CON EXITO", "ERROR CRÍTICO", "FIN"),
         emoji="📄",
+    ),
+    "parquet": Modulo(
+        slug="parquet",
+        titulo="Excel → .parquet",
+        descripcion="Convierte reportes de Excel (.xlsx/.xlsb) a .parquet. Revisa el contenido antes: "
+                    "descarta las tablas dinámicas y avisa qué corregir.",
+        script="../parquet_legacy.py",
+        log="parquet.log",
+        accept=".xlsx,.xlsm,.xls,.xlsb",
+        args=lambda path, nombre: [str(path)],
+        finalizadores=("PARQUET LISTO", "ERROR CRÍTICO"),
+        emoji="🧱",
+        categoria="parquet",
     ),
     "cierre-adjudicadas": Modulo(
         slug="cierre-adjudicadas",
@@ -257,6 +272,36 @@ def _lanzar(mod: Modulo, archivo: Path, nombre_original: str) -> int:
     )
     _pid_file(mod.slug).write_text(str(proc.pid))
     return proc.pid
+
+
+# ============================================== TRANSFORMACIÓN PARQUET ===
+# Lo que el usuario necesita saber ANTES de subir. Las validaciones reales las
+# hace parquet_legacy.py leyendo el contenido del archivo, no su nombre.
+
+_PANEL_PARQUET = """
+<h2>🧱 Qué hace y qué revisa</h2>
+<div class=aviso>
+El archivo se revisa antes de convertirlo y, si algo está mal, se dice exactamente qué corregir.
+Todo se decide leyendo el <b>contenido</b>, no el nombre del archivo.
+<ul style='margin:8px 0 0 18px'>
+  <li><b>Tablas dinámicas:</b> las hojas de TD (por ejemplo <code>TD1</code>, <code>TD2</code>,
+      <code>ROC_DINAMICO</code>) se descartan solas: al parquet va solo la hoja de datos.</li>
+  <li><b>Títulos:</b> deben estar en la primera fila de la hoja de datos, sin filas ni columnas en blanco
+      antes. Quedan normalizados, en minúscula y sin espacios ni tildes
+      (<code>Razon Social Cliente</code> → <code>razon_social_cliente</code>).</li>
+  <li><b>Distribución Cenabast:</b> al cliente se le envía el acumulado del año, así que el archivo debe
+      venir <b>desde enero</b>. Si parte en abril, se rechaza indicando qué meses faltan; se comprueba con la
+      fecha de entrega de las filas, no con el nombre del archivo ni el de las hojas.</li>
+  <li><b>Montos y fechas:</b> los montos quedan numéricos (se quitan $ y separadores; "Sin información" pasa a 0)
+      y las fechas en formato <code>AAAA-MM-DD</code>.</li>
+  <li><b>Tamaño:</b> se lee fila por fila, así que sirve igual para un archivo de 2 MB que para uno de 130 MB.
+      Los pesados demoran varios minutos: el avance se ve en la consola.</li>
+</ul>
+</div>
+<div style='margin:6px 0 18px'>
+  <a href='/legacy/parquet/descargar'><button type=button class=sec>⬇ Descargar último .parquet</button></a>
+</div>
+"""
 
 
 # ================================================ ITEM DETALLE · MESES ===
@@ -579,18 +624,25 @@ Corre solo el día 1 de cada mes y repasa el día 15 (foto de publicados/cerrado
 @router.get("", response_class=HTMLResponse)
 @router.get("/", response_class=HTMLResponse)
 def indice(request: Request) -> str:
-    cards = "".join(
-        f"<a class=modulo-card href='/legacy/{m.slug}'>"
-        f"<div class=titulo><span class=emoji>{m.emoji}</span> {escape(m.titulo)}</div>"
-        f"<div class=desc>{escape(m.descripcion)}</div></a>"
-        for m in MODULOS.values()
-    )
+    def cards(categoria: str) -> str:
+        return "".join(
+            f"<a class=modulo-card href='/legacy/{m.slug}'>"
+            f"<div class=titulo><span class=emoji>{m.emoji}</span> {escape(m.titulo)}</div>"
+            f"<div class=desc>{escape(m.descripcion)}</div></a>"
+            for m in MODULOS.values() if m.categoria == categoria
+        )
+
     cuerpo = (
         "<h1>Legacy · Procesos de carga</h1>"
         "<div class=aviso>Módulos portados desde la app Laravel <code>gestor_oc</code>. "
-        "Cada módulo recibe un archivo por chunks y lanza el script Python correspondiente "
-        f"en <code>bin/</code>. Carpeta de trabajo: <code>{escape(TEMP_DIR)}</code>.</div>"
-        f"<div class=cards>{cards}</div>"
+        "Cada módulo recibe un archivo por chunks y lanza el script Python correspondiente. "
+        f"Carpeta de trabajo: <code>{escape(TEMP_DIR)}</code>.</div>"
+        f"<div class=cards>{cards('carga')}</div>"
+        "<h1 style='margin-top:26px'>Transformación .parquet</h1>"
+        "<div class=aviso>Convierte los reportes de Excel a <code>.parquet</code> (se abre mucho más rápido y "
+        "pesa una fracción). Sirve para archivos livianos y pesados: se lee fila por fila, así que un Excel de "
+        "cientos de MB no satura el servidor.</div>"
+        f"<div class=cards>{cards('parquet')}</div>"
     )
     return layout("Legacy", cuerpo, usuario=usuario_actual(request))
 
@@ -623,6 +675,9 @@ def _vista_modulo(slug: str, usuario: dict | None = None) -> str:
     # Panel de meses + disparador automatico: solo para Item Detalle.
     panel_meses = ""
     subtitulo_subida = ""
+    if slug == "parquet":
+        panel_meses = _PANEL_PARQUET
+        subtitulo_subida = "<h2>📤 Subir el Excel</h2>"
     if slug == "item-detalle":
         filas_html = ""
         for it in _estado_meses(6):
@@ -679,7 +734,7 @@ Se muestran los últimos 6 meses.</div>
     cuerpo = f"""
 <h1>{mod.emoji} {escape(mod.titulo)}</h1>
 <div class=aviso>{escape(mod.descripcion)} &nbsp;·&nbsp; Script:
-<code>bin/{mod.script}</code> &nbsp;·&nbsp; Log: <code>{escape(mod.log)}</code></div>
+<code>{escape(os.path.normpath('bin/' + mod.script))}</code> &nbsp;·&nbsp; Log: <code>{escape(mod.log)}</code></div>
 {panel_meses}
 {subtitulo_subida}
 <div class=cards>
@@ -870,6 +925,15 @@ async def item_detalle_auto(request: Request, periodo: str = Form(default="")):
 @router.get("/item-detalle/estado-meses")
 def item_detalle_estado_meses(n: int = 6):
     return JSONResponse(_estado_meses(min(max(n, 1), 24)))
+
+
+@router.get("/parquet/descargar")
+def parquet_descargar():
+    """Último .parquet generado."""
+    archivos = sorted(TEMP_DIR.glob("*.parquet"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not archivos:
+        raise HTTPException(404, "Todavía no hay ningún .parquet generado")
+    return FileResponse(archivos[0], media_type="application/octet-stream", filename=archivos[0].name)
 
 
 @router.post("/cierre-adjudicadas/ejecutar")

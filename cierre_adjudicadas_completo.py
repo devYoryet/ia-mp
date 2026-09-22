@@ -43,6 +43,8 @@ cierre_adjudicadas/reportes/. Código: 0 sin fallas · 1 con fallas · 2 error.
 from __future__ import annotations
 
 import argparse
+import csv
+import io
 import json
 import os
 import sys
@@ -148,6 +150,25 @@ def validar_mes(C, P, O, m: str, mes_cerrado: bool, api_mes: dict | None = None,
         icono = {"ok": "OK   ", "falla": "FALLA", "aviso": "AVISO", "omitida": "  -  "}[r.estado]
         log(f"   [{icono}] {r.id} {r.titulo}: {r.resumen}")
     return res, esp
+
+
+def csv_cenabast(C, mes: str) -> tuple[bytes, int]:
+    """CSV de lo adjudicado al comprador CENABAST en el mes (segundo correo del cierre).
+
+    Separador `;` y BOM UTF-8: Excel lo abre en columnas sin importar nada, igual
+    que el export "CSV para MS Excel" de phpMyAdmin."""
+    ini, fin = bd.rango_mes(mes)
+    with C.cursor() as cur:
+        cur.execute(f"SELECT * FROM {bd.DB_ADJ}.Licitaciones WHERE RUT = %s AND FECHASQL BETWEEN %s AND %s",
+                    (reglas.RUT_CENABAST, ini, fin))
+        columnas = [d[0] for d in cur.description]
+        filas = cur.fetchall()
+    buffer = io.StringIO()
+    w = csv.writer(buffer, delimiter=";", quoting=csv.QUOTE_MINIMAL, lineterminator="\r\n")
+    w.writerow(columnas)
+    for fila in filas:
+        w.writerow(["" if v is None else v for v in fila])
+    return buffer.getvalue().encode("utf-8-sig"), len(filas)
 
 
 def universo_v4(C, mes: str, esp: dict) -> list[str]:
@@ -272,6 +293,13 @@ def correr(a) -> int:
         por_mes[m] = res
         if m == mes:
             estado_mes = v.resumen_estados(res)
+    # El CSV de CENABAST se arma antes de cerrar las conexiones (segundo correo).
+    cenabast = None
+    if a.modo == "cierre" and estado_mes != "falla":
+        try:
+            cenabast = csv_cenabast(C, mes)
+        except Exception as exc:  # noqa: BLE001
+            log(f"AVISO: no se pudo armar el CSV de CENABAST ({exc}); el cierre sigue siendo válido.")
     for cn in (C, P, O):
         try:
             cn.close()
@@ -288,6 +316,8 @@ def correr(a) -> int:
             if mes == bd.mes_anterior(datetime.now(v.ZONA).date()):
                 anio, num = (int(x) for x in mes.split("-"))
                 correos.aviso_cierre_adjudicadas(anio, num, log)
+                if cenabast:
+                    correos.aviso_cenabast_csv(anio, num, cenabast[0], cenabast[1], log)
         else:
             resumen_acciones = [{k: (len(val) if isinstance(val, list) and k in ("nuevas", "incompletas") else val)
                                  for k, val in x.items()} for x in acciones]

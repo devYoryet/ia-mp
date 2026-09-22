@@ -339,6 +339,24 @@ def sincronizar_tablas_fecha(engine, servidor_label="?", tablas=("Fecha", "fecha
     except Exception as e:
         print(f"Error alineando tablas de fecha ({servidor_label}): {e}")
 
+def avisar_td_por_correo(engine):
+    """Aviso automático tras dejar la TD y el ranking en Clásico y Prime.
+
+    El mes sale de MAX(Fecha) de `Base` en Prime (lo que quedó cargado), no del
+    nombre del archivo. Sale una vez por periodo."""
+    try:
+        with engine.connect() as conn:
+            fila = conn.execute(text(f"SELECT YEAR(MAX(Fecha)), MONTH(MAX(Fecha)) FROM `{TABLA_DESTINO}`")).fetchone()
+        if not fila or not fila[0]:
+            print("[ALERTA] No se pudo determinar el ultimo mes de Base: no se envia el aviso por correo.")
+            return
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        import correos
+        correos.aviso_td_medicamentos(int(fila[0]), int(fila[1]), print)
+    except Exception as e:
+        print(f"[ALERTA] No se pudo enviar el aviso de TD Medicamentos: {e}")
+
+
 def validacion_de_tablas(engine):
     print("\n--- Verificando copia de datos, por favor espere... ---")
     TABLA_ORIGEN = "Base"
@@ -518,6 +536,7 @@ def ejecutar_migracion_prime(engine_prime):
             sincronizacion_ranking_incremental(engine_prime)
             validacion_de_tablas(engine_prime)
             sincronizar_tablas_fecha(engine_prime, "PRIME", tablas=("Fecha", "fecha_ranking"))
+            avisar_td_por_correo(engine_prime)
         else:
             print("\nABORTANDO: Falló la validación en Prime. No se actualizará el Ranking.")
 

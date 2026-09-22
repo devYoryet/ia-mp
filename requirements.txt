@@ -27,3 +27,7 @@ mysql-connector-python>=9.0.0
 # Adjudicaciones (bin/estructura_adj.py): scraping de mercadopublico.cl.
 requests>=2.31.0
 beautifulsoup4>=4.12.0
+# Transformación Excel -> .parquet (/legacy/parquet): escritura por lotes con
+# pyarrow y lectura de .xlsb con pyxlsb (openpyxl no lee ese formato).
+pyarrow>=16.0.0
+pyxlsb>=1.0.10
