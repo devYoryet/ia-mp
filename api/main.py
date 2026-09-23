@@ -1295,49 +1295,49 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
         except Exception:  # noqa: BLE001
             return str(dt)[:16]
 
-    # Estado del worker: HASTA QUÉ PUBLICACIÓN está al día (frontera) + última
-    # fila procesada + cuántas le faltan. La FRONTERA es lo más importante: dice
-    # "todo lo publicado antes de esta fecha YA está procesado". Si la frontera
-    # está cerca de NOW (≤15min) el sistema está al día; si está muy atrás, hay
-    # delay y NO podemos confiar en "vi todo lo publicado hasta las 18:30".
+    # Estado del worker. Son DOS rezagos distintos y el cartel viejo los mezclaba
+    # en uno solo:
+    #   1. el del WORKER  — hace cuánto clasificó su última fila y cuántas le
+    #      quedan en cola. Es lo único que depende de la IA.
+    #   2. el del SCRAPER — el legacy inserta las filas bastante después de que
+    #      mercadopublico las publica (medido el 23-09-2026: ~90 min promedio,
+    #      piso ~9 min). La pendiente más antigua suele haber entrado a la tabla
+    #      recién, así que su Fecha_Publicacion NO mide atraso de la IA.
+    # El cartel viejo derivaba "todo lo publicado hasta X ya fue procesado" de
+    # MIN(Fecha_Publicacion) de las pendientes, y por eso marcaba DELAY con el
+    # worker al día y 3 filas en cola. Ahora el semáforo lo decide el worker y el
+    # rezago del scraping se informa aparte, sin atribuírselo a la IA.
     estado_worker = ""
     try:
-        from datetime import datetime as _dt, timedelta as _tdh
-        # El container corre en UTC pero el usuario está en Chile (UTC-4). Los
-        # timestamps del LOG (creado_en, escritos con datetime.now() Python) están
-        # en UTC; Fecha_Publicacion viene del scraping y ya está en hora Chile.
-        _TZ_OFFSET = _tdh(hours=4)  # UTC -> Chile
-        _now_chile = _dt.now() - _TZ_OFFSET
-        # ult fila procesada (creado_en está en UTC → convertir a Chile)
-        _ult_utc = _query("SELECT MAX(creado_en) u FROM clasificador_ia_log")[0]["u"]
-        _ult = (_ult_utc - _TZ_OFFSET) if _ult_utc else None
-        _now = _now_chile
-        # frontera = MIN(Fecha_Publicacion) de las pendientes (estado_gestor NULL
-        # + NO en log). Todo lo publicado ANTES está procesado.
-        # Filtro `> '2000-01-01'`: ignora las zero-dates ('0000-00-00 00:00:00')
-        # que pymysql devolvería como string y romperían .total_seconds(). Hay
-        # 232 zero-dates en Licitaciones_diarias.Fecha_Cierre y la prevención
-        # cubre también Fecha_Publicacion por robustez.
-        _mn_ca = _query(
-            "SELECT MIN(t.Fecha_Publicacion) m FROM compra_agil t WHERE t.estado_gestor IS NULL "
-            "AND t.Fecha_Publicacion > '2000-01-01' "
-            "AND NOT EXISTS (SELECT 1 FROM clasificador_ia_log l "
-            "WHERE l.tabla_origen='compra_agil' AND l.fila_id=t.id)"
-        )[0]["m"]
-        _mn_li = _query(
-            "SELECT MIN(t.Fecha_Publicacion) m FROM Licitaciones_diarias t WHERE t.estado_gestor IS NULL "
-            "AND t.Fecha_Publicacion > '2000-01-01' "
-            "AND NOT EXISTS (SELECT 1 FROM clasificador_ia_log l "
-            "WHERE l.tabla_origen='Licitaciones_diarias' AND l.fila_id=t.id)"
-        )[0]["m"]
-        # la pendiente más antigua entre ambas tablas (descarta cualquier string
-        # residual por si MIN devolvió zero-date pese al filtro — defensa final)
-        _pend = [x for x in (_mn_ca, _mn_li) if x and not isinstance(x, str)]
-        _frontera = min(_pend) if _pend else _now  # si no hay pendientes, al día hasta ahora
-        _seg_front = int((_now - _frontera).total_seconds())
-        _cls = "ok" if _seg_front < 900 else ("warn" if _seg_front < 3600 else "bad")
-        _msg_ok = "AL DÍA" if _seg_front < 900 else ("LEVE DELAY" if _seg_front < 3600 else "DELAY")
-        # contadores y "última procesada"
+        from datetime import datetime as _dt, timezone as _tzutc
+        from zoneinfo import ZoneInfo
+        # creado_en lo escribe el worker con datetime.now() dentro del container,
+        # que corre en UTC; Fecha_Publicacion viene del scraping y ya está en hora
+        # de Chile. Antes se restaban 4 h FIJAS: desde el 06-09-2026 Chile está en
+        # horario de verano (UTC-3) y el panel mostraba todo 1 h antes de lo real
+        # ("última fila procesada 12:18" cuando eran las 13:18). ZoneInfo sigue el
+        # cambio de hora solo.
+        _CHILE = ZoneInfo("America/Santiago")
+
+        def _a_chile(dt_utc):
+            """UTC naive (como lo guarda el log) → hora de Chile naive."""
+            if not dt_utc or isinstance(dt_utc, str):
+                return dt_utc
+            return dt_utc.replace(tzinfo=_tzutc.utc).astimezone(_CHILE).replace(tzinfo=None)
+
+        def _hace(dt):
+            if not dt or isinstance(dt, str):
+                return ""
+            _m = max(0, int((_now - dt).total_seconds() // 60))
+            if _m < 60:
+                return f"hace {_m} min"
+            return f"hace {_m // 60} h {_m % 60:02d} min"
+
+        _now = _dt.now(_CHILE).replace(tzinfo=None)
+        _ult = _a_chile(_query("SELECT MAX(creado_en) u FROM clasificador_ia_log")[0]["u"])
+        # cola del worker: estado_gestor NULL (nadie la clasificó) y no está en el
+        # log. Mismo criterio que detector.filas_pendientes, para que el número del
+        # cartel sea exactamente lo que el worker va a tomar en el próximo ciclo.
         _falt_ca = _query(
             "SELECT COUNT(*) n FROM compra_agil t WHERE t.estado_gestor IS NULL "
             "AND NOT EXISTS (SELECT 1 FROM clasificador_ia_log l "
@@ -1348,13 +1348,43 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
             "AND NOT EXISTS (SELECT 1 FROM clasificador_ia_log l "
             "WHERE l.tabla_origen='Licitaciones_diarias' AND l.fila_id=t.id)"
         )[0]["n"]
-        _ult_txt = f"última fila procesada: {_fmt_dt(_ult)}" if _ult else ""
+        _falt = _falt_ca + _falt_li
+        _min_ult = int((_now - _ult).total_seconds() // 60) if _ult else None
+        # El worker cicla cada 3 min. Si hay cola y hace >15 min que no escribe una
+        # fila, está caído o cortado por fallos de API (p.ej. sin crédito) — eso es
+        # lo que hay que mirar. Con cola grande pero avanzando, está recuperando.
+        if _falt == 0:
+            _cls, _msg_ok = "ok", "AL DÍA"
+        elif _min_ult is None or _min_ult >= 15:
+            _cls, _msg_ok = "bad", "DETENIDO"
+        elif _falt > 2000:
+            _cls, _msg_ok = "warn", "PONIÉNDOSE AL DÍA"
+        else:
+            _cls, _msg_ok = "ok", "AL DÍA"
+        # rezago del scraping: hasta qué publicación alcanzó a cargar el legacy.
+        # MAX(Fecha_Publicacion) usa el índice de ambas tablas (medido: 0,01 s).
+        _ing = [
+            x for x in (
+                _query("SELECT MAX(Fecha_Publicacion) m FROM compra_agil")[0]["m"],
+                _query("SELECT MAX(Fecha_Publicacion) m FROM Licitaciones_diarias")[0]["m"],
+            ) if x and not isinstance(x, str)
+        ]
+        _ing_max = max(_ing) if _ing else None
+        _ult_txt = (
+            f"última fila procesada: <b>{_fmt_dt(_ult)}</b> ({_hace(_ult)})"
+            if _ult else "sin filas procesadas todavía"
+        )
+        _ing_txt = (
+            f" El legacy carga con rezago: lo más nuevo que trajo se publicó "
+            f"{_fmt_dt(_ing_max)} ({_hace(_ing_max)}) — ese tramo no depende de la IA."
+            if _ing_max else ""
+        )
         estado_worker = (
             f"<div class='worker-st worker-{_cls}'>"
-            f"<b>Worker {_msg_ok}</b> · todo lo publicado hasta "
-            f"<b>{_fmt_dt(_frontera)}</b> ya fue procesado por la IA. "
-            f"Pendientes en cola del worker: {_falt_ca + _falt_li} "
-            f"(compra ágil {_falt_ca} · licitaciones {_falt_li}). {_ult_txt}"
+            f"<b>Worker {_msg_ok}</b> · {_ult_txt} · "
+            f"pendientes en cola: {_falt} "
+            f"(compra ágil {_falt_ca} · licitaciones {_falt_li})."
+            f"{_ing_txt}"
             f"</div>"
         )
     except Exception:  # noqa: BLE001
