@@ -13,8 +13,13 @@ Para ver el estado medido de cada etapa: `python3 funnel_cascada.py 30`.
 `fuentes.preparar_fila(tabla, fila)` corre antes de todo. Para compra ágil y
 licitaciones devuelve la misma fila, sin cambios. Para cotizaciones quita el
 sufijo UNSPSC que el scraper pega a la glosa (ver [03-fuentes.md](03-fuentes.md#cotizaciones))
-y guarda la glosa cruda en `_desc_historico`. La etapa 2 hace su match exacto
-contra esa glosa cruda.
+y guarda la glosa cruda en `_desc_cruda`. El histórico (etapa 2) y
+`modelo_descarte` (etapas 2, 5 y 6) usan la cruda, porque ahí el sufijo suma. Las
+ramas que asignan pactivo usan la limpia.
+
+**Ajustes por fuente** (declarados en `fuentes.py`, no en la cascada):
+`usar_modelo_adjunto` (apagado en cotizaciones) y `umbral_modelo_pactivo`
+(0,50 en cotizaciones; el global es 0,30).
 
 ## Etapas
 

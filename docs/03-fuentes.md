@@ -104,6 +104,25 @@ backtest muestrea por `Fecha_Publicacion` (`columna_fecha_muestreo`).
 - **La glosa casi no se repite en compra ágil:** 0 % de coincidencia exacta y 8,75 %
   quitando el sufijo. El histórico útil es el **propio** de cotizaciones.
 
+**Configuración de la cascada para cotizaciones** (`fuentes.py`). Cada punto se
+midió con backtest de 12 semanas (4.082 filas reales, $0), un cambio por corrida:
+
+| corrida | cambio | FP | pact✗ | FN | c/p | a Claude |
+|---|---|---|---|---|---|---|
+| `cotz_sin_limpieza` | cascada de compra ágil tal cual | 21 | 15 | 0 | 39 | 404 |
+| `cotz_con_limpieza` | glosa sin sufijo UNSPSC en todas las etapas | 27 | 15 | 0 | 29 | 494 |
+| `cotz_limpia_desc_cruda` | limpia para asignar pactivo; **cruda** para histórico y `modelo_descarte` | 24 | 15 | 0 | 29 | 396 |
+| `cotz_sin_adjunto` | `modelo_adjunto` apagado (0 de 11 aciertos) | 18 | 10 | 0 | 29 | 405 |
+| `cotz_umbral050` | umbral de `modelo_pactivo` 0,50 (en 0,30–0,50 acertaba 5 de 17) | **17** | **7** | **0** | **29** | 410 |
+
+- **Por qué la glosa cruda para descartar:** el nombre UNSPSC es buena señal de *rubro*.
+  - Medido en 13.496 filas de 2026: con la glosa cruda, `modelo_descarte` resuelve 829 descartes más, con el mismo riesgo (2 contra 3 de 632 intereses).
+  - Para el *pactivo* es al revés: con la glosa limpia el diccionario acierta 614 intereses más de 7.203 y comete la mitad de errores de pactivo (192 contra 396).
+- **Resultado:** las etapas gratuitas resuelven ~90 %, sin falsos negativos. A Claude llegarían unas **34 filas por semana**.
+  - Esa rama no se puede medir sin gastar API.
+  - Costo inferido: centavos al mes.
+- **Pendiente:** `modelo_marcas` quedó con la mayor parte del error restante (14 filas, 9 FP). Es el mismo patrón: los modelos entrenados con compra ágil y licitaciones no transfieren bien.
+
 **Bug conocido del legacy** (no es de este repo): `CotizacionesController::remove`
 borra de `..._clientes_agil` en vez de `..._clientes_cotizaciones`. Descartar
 una cotización ya enviada no la retira del cliente.

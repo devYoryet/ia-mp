@@ -578,6 +578,12 @@ def _clasificar_fila_impl(
     modelo_adjunto=None,
 ) -> Resultado:
     descripcion = fila.get("Descripcion")
+    # Glosa CRUDA si la fuente la limpió (cotizaciones: sin sufijo UNSPSC en
+    # `Descripcion`). La usan las etapas donde el sufijo SUMA: el histórico propio
+    # (guardado con sufijo) y modelo_descarte (el nombre UNSPSC es señal de rubro).
+    # Las ramas que asignan pactivo usan la limpia. Ver fuentes.preparar_fila.
+    # Para compra_agil/Licitaciones_diarias es la misma `Descripcion`.
+    desc_cruda = fila.get("_desc_cruda") or descripcion
     titulo = fila.get("Titulo")
     vinculos = fila.get("VINCULOS")
     texto = f"{titulo or ''} {descripcion or ''}".strip()
@@ -657,10 +663,7 @@ def _clasificar_fila_impl(
     # descarte_item corre igual abajo. No agrega costo de Claude (es lookup en
     # memoria). Medido: cruce_base 0 FN, histórico 6, descarte_item 30 FN/30d —
     # de esos 30, 4 tenían match histórico-interés y este reorden los rescata.
-    # `_desc_historico`: glosa CRUDA si la fuente la limpió (cotizaciones) — su
-    # histórico está guardado con el sufijo, el match exacto va contra lo crudo.
-    p = preclasificador.buscar_en_historico(
-        tabla, fila.get("_desc_historico") or descripcion, fila.get("id", 0))
+    p = preclasificador.buscar_en_historico(tabla, desc_cruda, fila.get("id", 0))
     # Validar contra catálogo ACTIVO: el histórico puede devolver un pactivo que
     # ya fue REMOVIDO del catálogo (caso medido 2026-06-01: 'Guante' no está en
     # Base ni en el diccionario filtrado por clientes activos, pero el histórico
@@ -678,7 +681,7 @@ def _clasificar_fila_impl(
         # mire. NO se descarta automático — a veces el histórico acierta y el
         # modelo se equivoca (caso ACIDO FOLINICO → Leucovorina, sinónimos).
         if p.interes == 1 and p.pactivo and p.soporte <= 2:
-            p_desc = descarte_modelo.prob_descarte(modelo_descarte, descripcion)
+            p_desc = descarte_modelo.prob_descarte(modelo_descarte, desc_cruda)
             if p_desc >= config.umbral_modelo_descarte:
                 return Resultado(
                     interes=1,
@@ -714,7 +717,7 @@ def _clasificar_fila_impl(
     # este punto (sólo 3% los resuelve antes historico/cruce, que son más
     # autoritativos y deben ganar). Si el modelo NO está seguro, no hace nada y la
     # cascada sigue: Claude queda como backstop recall-first. Ver [[adjunto-fn-lever]].
-    if modelo_adjunto is not None:
+    if modelo_adjunto is not None and fuentes.usa_modelo_adjunto(tabla):
         p_adj = madj.prob_adjunto(modelo_adjunto, titulo or "", descripcion or "")
         if p_adj >= config.umbral_adjunto:
             return Resultado(
@@ -811,7 +814,7 @@ def _clasificar_fila_impl(
         # los componentes de un pactivo real del catálogo presentes en la
         # glosa). El resultado lleva método propio para poder auditar el choque.
         if not por_combinacion:
-            p_desc = descarte_modelo.prob_descarte(modelo_descarte, descripcion)
+            p_desc = descarte_modelo.prob_descarte(modelo_descarte, desc_cruda)
             if p_desc >= config.umbral_modelo_descarte:
                 return Resultado(
                     interes=0,
@@ -852,7 +855,7 @@ def _clasificar_fila_impl(
     # reclamó esta fila; si está MUY seguro de que es descarte, se resuelve sin
     # gastar una llamada. Se aplica sobre la DESCRIPCIÓN (el texto con que se
     # entrenó). El cruce Base corrió primero — un producto real ya está a salvo.
-    p_desc = descarte_modelo.prob_descarte(modelo_descarte, descripcion)
+    p_desc = descarte_modelo.prob_descarte(modelo_descarte, desc_cruda)
     if p_desc >= config.umbral_modelo_descarte:
         return Resultado(
             interes=0,
@@ -871,10 +874,11 @@ def _clasificar_fila_impl(
     # Si está MUY seguro, asigna pactivo + (comp,pres) desde el histórico real
     # del pactivo; si no llega al umbral, la fila sigue a Claude.
     pact_pred, conf = mp.predecir(modelo_pactivo, descripcion)
+    umbral_mp = fuentes.umbral_modelo_pactivo(tabla, config.umbral_modelo_pactivo)
     # Si el modelo predice un meta-pactivo (Adjunto), lo ignoramos: su
     # asignación es contextual y solo Claude la decide. Igualmente si la
     # clase predicha no está en el catálogo activo de hoy (cliente desactivó).
-    if (pact_pred and conf >= config.umbral_modelo_pactivo
+    if (pact_pred and conf >= umbral_mp
             and normalizar(pact_pred) not in {normalizar(p) for p in PACTIVOS_NO_MATCH_DIRECTO}
             and normalizar(pact_pred) in pactivos_norm):
         # Veto puntual: el modelo sobre-asigna 'Cinta Adhesiva Médica' a cintas
@@ -895,7 +899,7 @@ def _clasificar_fila_impl(
         elif (pact_pred and "-" not in pact_pred and "+" not in pact_pred
               and SUFIJO_COMPUESTO.search(descripcion or "")):
             pact_pred = None
-    if (pact_pred and conf >= config.umbral_modelo_pactivo
+    if (pact_pred and conf >= umbral_mp
             and normalizar(pact_pred) not in {normalizar(p) for p in PACTIVOS_NO_MATCH_DIRECTO}
             and normalizar(pact_pred) in pactivos_norm):
         comp_g, pres_g = taxonomia.extraer_de_glosa(texto, pact_pred)

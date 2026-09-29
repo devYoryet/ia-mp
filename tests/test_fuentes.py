@@ -21,6 +21,17 @@ def test_registro_columnas_rubro():
     assert fuentes.FUENTES["Licitaciones_diarias"].columna_rubro == "Cod_Onu"
 
 
+def test_modelo_adjunto_por_fuente():
+    assert fuentes.usa_modelo_adjunto("compra_agil")
+    assert fuentes.usa_modelo_adjunto("Licitaciones_diarias")
+    assert not fuentes.usa_modelo_adjunto("cotizaciones")
+
+
+def test_umbral_modelo_pactivo_por_fuente():
+    assert fuentes.umbral_modelo_pactivo("compra_agil", 0.30) == 0.30
+    assert fuentes.umbral_modelo_pactivo("cotizaciones", 0.30) == 0.50
+
+
 def test_worker_default_no_incluye_cotizaciones(monkeypatch):
     monkeypatch.delenv("FUENTES_WORKER", raising=False)
     assert fuentes.fuentes_worker() == ["compra_agil", "Licitaciones_diarias"]
@@ -76,7 +87,7 @@ def test_preparar_fila_cotizaciones(monkeypatch):
             "VINCULOS": cruda + ".SEMAGLUTIDA 4MG/3ML SOLUCION INYECTABLE"}
     out = fuentes.preparar_fila("cotizaciones", fila)
     assert out["Descripcion"] == "SEMAGLUTIDA 4MG/3ML SOL/INY DISP+AG"
-    assert out["_desc_historico"] == cruda
+    assert out["_desc_cruda"] == cruda
     assert out["VINCULOS"] == "SEMAGLUTIDA 4MG/3ML SOL/INY DISP+AG.SEMAGLUTIDA 4MG/3ML SOLUCION INYECTABLE"
     assert fila["Descripcion"] == cruda  # la fila original no se toca
 

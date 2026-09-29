@@ -41,6 +41,12 @@ class Fuente:
     columna_rubro: str               # código UNSPSC para descarte_items
     columna_fecha_muestreo: str = "fecha_clasificacion"
     limpiar_sufijo_unspsc: bool = False
+    # Rama modelo_adjunto (etapa 3). Se apaga por fuente cuando su etiqueta no
+    # corresponde a cómo clasifica el equipo esa fuente.
+    usar_modelo_adjunto: bool = True
+    # Umbral propio de modelo_pactivo (etapa 7). None = el global de config
+    # (UMBRAL_MODELO_PACTIVO, calibrado sobre compra_agil).
+    umbral_modelo_pactivo: float | None = None
 
 
 FUENTES: dict[str, Fuente] = {
@@ -50,7 +56,16 @@ FUENTES: dict[str, Fuente] = {
         Fuente("Licitaciones_diarias", "Licitaciones", columna_rubro="Cod_Onu"),
         Fuente("cotizaciones", "Cotizaciones", columna_rubro="Item",
                columna_fecha_muestreo="Fecha_Publicacion",
-               limpiar_sufijo_unspsc=True),
+               limpiar_sufijo_unspsc=True,
+               # Medido 2026-09-29: 0 de 11 aciertos en 12 semanas. En
+               # cotizaciones "el detalle está en el adjunto" se etiqueta
+               # 'Varios Productos' (246 filas) o se desglosa leyendo el adjunto
+               # (Fluoxetina, Sertralina... en filas separadas); 'Adjunto' casi
+               # no se usa (20 filas).
+               usar_modelo_adjunto=False,
+               # Medido 2026-09-29: en la banda 0,30-0,50 acierta 5 de 17
+               # (test rápidos, cinta correctora, protector solar).
+               umbral_modelo_pactivo=0.50),
     )
 }
 
@@ -69,6 +84,16 @@ def fuentes_worker() -> list[str]:
     if desconocidas:
         raise ValueError(f"FUENTES_WORKER tiene tablas no registradas: {desconocidas}")
     return tablas
+
+
+def usa_modelo_adjunto(tabla: str) -> bool:
+    f = FUENTES.get(tabla)
+    return f.usar_modelo_adjunto if f else True
+
+
+def umbral_modelo_pactivo(tabla: str, global_: float) -> float:
+    f = FUENTES.get(tabla)
+    return f.umbral_modelo_pactivo if f and f.umbral_modelo_pactivo is not None else global_
 
 
 def etiqueta(tabla: str) -> str:
@@ -159,8 +184,14 @@ def preparar_fila(tabla: str, fila: dict) -> dict:
       - `Descripcion` sin el sufijo UNSPSC (lo que leen reglas, modelos y Claude);
       - `VINCULOS` = glosa + '.' + descripción de la cotización: se le limpia
         el mismo prefijo;
-      - `_desc_historico` = la glosa ORIGINAL: el histórico propio de la tabla
-        está guardado con sufijo, y ahí el match exacto debe ser contra lo crudo.
+      - `_desc_cruda` = la glosa ORIGINAL, para las etapas donde el sufijo SUMA:
+          · histórico: el propio de la tabla está guardado con sufijo (match exacto);
+          · modelo_descarte: el nombre UNSPSC es buena señal de RUBRO. Medido
+            2026-09-29 en 13.496 cotizaciones de 2026: con la glosa cruda resuelve
+            829 descartes más que con la limpia, con el mismo riesgo (2 vs 3 de
+            632 intereses). En cambio, para el PACTIVO el sufijo es veneno: con la
+            glosa limpia el diccionario acierta 614 intereses más de 7.203 y la
+            mitad de pactivos equivocados (192 vs 396).
     La fila original no se toca: escritor registra en el log lo que ve la persona."""
     f = FUENTES.get(tabla)
     if not f or not f.limpiar_sufijo_unspsc:
@@ -173,7 +204,7 @@ def preparar_fila(tabla: str, fila: dict) -> dict:
         return fila
     nueva = dict(fila)
     nueva["Descripcion"] = limpia
-    nueva["_desc_historico"] = cruda
+    nueva["_desc_cruda"] = cruda
     vinc = fila.get("VINCULOS") or ""
     if cruda and vinc.startswith(cruda):
         nueva["VINCULOS"] = limpia + vinc[len(cruda):]
