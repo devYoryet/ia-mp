@@ -2396,11 +2396,13 @@ def estadisticas_json(tabla: str = "compra_agil", dias: int = 14):
     for r in acierto:
         d = str(r["d"])
         n = r.get("n") or 0
+        # SUM() llega como Decimal desde pymysql y JSONResponse no lo serializa
+        # (el endpoint respondía 500 siempre que había datos de acierto).
         if n:
-            acc_int[d] = round((r.get("a_int") or 0) / n * 100, 1)
+            acc_int[d] = round(float(r.get("a_int") or 0) / n * 100, 1)
         ai = r.get("ambos_int") or 0
         if ai:
-            acc_pact[d] = round((r.get("a_pact") or 0) / ai * 100, 1)
+            acc_pact[d] = round(float(r.get("a_pact") or 0) / float(ai) * 100, 1)
     # Costo acumulado (test y producción se grafican por separado, suma acumulada)
     costo_prod_dia = {str(r["d"]): float(r["c"]) for r in costo if r["contexto"] == "produccion"}
     costo_test_dia = {str(r["d"]): float(r["c"]) for r in costo if r["contexto"] == "test"}
@@ -2431,10 +2433,10 @@ def estadisticas_json(tabla: str = "compra_agil", dias: int = 14):
     # Acierto promedio ponderado
     n_acc_int, n_total, n_pact, ambos = 0, 0, 0, 0
     for r in acierto:
-        n_acc_int += r.get("a_int") or 0
+        n_acc_int += float(r.get("a_int") or 0)
         n_total += r.get("n") or 0
-        n_pact += r.get("a_pact") or 0
-        ambos += r.get("ambos_int") or 0
+        n_pact += float(r.get("a_pact") or 0)
+        ambos += float(r.get("ambos_int") or 0)
     acc_global_int = f"{n_acc_int/n_total*100:.1f}%" if n_total else "—"
     acc_global_pact = f"{n_pact/ambos*100:.1f}%" if ambos else "—"
     resumen_html = (
