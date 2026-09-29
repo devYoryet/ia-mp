@@ -12,13 +12,12 @@ import os
 
 from config import config
 from db import conexion_worker
+from fuentes import check as _check
 
 # Offset opcional sobre el ORDER BY del backtest — permite correr la misma
 # cascada sobre una ventana de filas DISTINTA a las más recientes, para
 # verificar que un cambio no está sobreajustado a un sample puntual.
 _BACKTEST_OFFSET = int(os.getenv("BACKTEST_OFFSET", "0"))
-
-TABLAS_VALIDAS = ("compra_agil", "Licitaciones_diarias")
 
 # --- producción: filas pendientes en el LEGACY que la IA aún no procesó ---
 # Criterio: estado_gestor IS NULL (no clasificada por HUMANO en gestor_licitaciones)
@@ -56,11 +55,6 @@ WHERE t.estado_gestor IS NOT NULL
 ORDER BY t.fecha_clasificacion DESC
 LIMIT %s OFFSET %s
 """
-
-
-def _check(tabla: str) -> None:
-    if tabla not in TABLAS_VALIDAS:
-        raise ValueError(f"Tabla no permitida: {tabla}")
 
 
 def filas_pendientes(tabla: str, limite: int | None = None) -> list[dict]:

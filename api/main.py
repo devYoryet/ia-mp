@@ -134,7 +134,28 @@ app.add_middleware(
     https_only=False,  # nginx termina TLS; la cookie viaja en HTTP interno.
 )
 
-TABLAS_VALIDAS = ("compra_agil", "Licitaciones_diarias")
+# Fuentes que el panel conoce — declaradas UNA vez en fuentes.py. Agregar una
+# fuente allá la hace aparecer en la cola, filtros, export y estadísticas.
+from fuentes import TABLAS_VALIDAS, etiqueta as _etiqueta_fuente  # noqa: E402
+
+
+def _sql_col_origen(col: str) -> str:
+    """SQL que trae `col` de la fila origen de un registro del log, sea cual sea
+    su tabla: COALESCE de una subconsulta correlacionada por PK por fuente."""
+    return "COALESCE(" + ",".join(
+        f"(SELECT o{i}.`{col}` FROM `{t}` o{i} WHERE o{i}.id=clasificador_ia_log.fila_id "
+        f"AND clasificador_ia_log.tabla_origen='{t}')"
+        for i, t in enumerate(TABLAS_VALIDAS)
+    ) + ")"
+
+
+def _sql_case_adjunto(prefijo: str = "") -> str:
+    """Ramas CASE del supergrupo 'Adjunto' por fuente: y1, y2, y3... en el orden
+    del registro (compra ágil, licitaciones, cotizaciones)."""
+    return "".join(
+        f" WHEN {prefijo}pactivo_sugerido='Adjunto' AND {prefijo}tabla_origen='{t}' THEN 'y{i + 1}'"
+        for i, t in enumerate(TABLAS_VALIDAS)
+    )
 POR_HOJA_DEFAULT = 50  # filas por hoja en la cola de revisión (configurable)
 POR_HOJA_OPCIONES = (25, 50, 100, 200)
 
@@ -310,11 +331,12 @@ def resumen(request: Request):
     cuerpo = (
         "<h1>Resumen</h1>"
         "<h2>Pendientes de procesar (filas nuevas sin clasificar)</h2><div class=cards>"
-        f"<div class=card><div class=n>{pend_proc['compra_agil']:,}</div>"
-        f"<div class=l>Pendientes compra ágil</div></div>"
-        f"<div class=card><div class=n>{pend_proc['Licitaciones_diarias']:,}</div>"
-        f"<div class=l>Pendientes licitaciones</div></div>"
-        "</div>"
+        + "".join(
+            f"<div class=card><div class=n>{pend_proc[_t]:,}</div>"
+            f"<div class=l>Pendientes {_e(_etiqueta_fuente(_t).lower())}</div></div>"
+            for _t in TABLAS_VALIDAS
+        )
+        +         "</div>"
         "<h2>Clasificación IA</h2><div class=cards>"
         f"<div class=card><div class=n>{log['n']}</div><div class=l>Clasificadas por IA</div></div>"
         f"<div class=card><div class=n>{log['pend'] or 0}</div><div class=l>Pendientes de revisión</div></div>"
@@ -644,6 +666,8 @@ _LEGACY_COLS = {
         ("Usuario", "nombre_clasificador"),
     ],
 }
+# Cotizaciones: mismo esquema que compra_agil (Item = UNSPSC, contacto, monto).
+_LEGACY_COLS["cotizaciones"] = list(_LEGACY_COLS["compra_agil"])
 
 # Columnas EXTRA con info de la IA que añadimos al final del legacy export
 # para que el revisor vea de un vistazo lo que la cascada propuso.
@@ -729,8 +753,7 @@ def revision_xlsx(tabla: str = "", tipo: str = "", metodo: str = "", conf: str =
     if busqueda:
         cond.append("log.descripcion LIKE %s"); args.append(f"%{busqueda.strip()}%")
     if licitacion:
-        ca_ids, li_ids = _fila_ids_por_licitacion(licitacion.strip())
-        ids = ca_ids if tabla_export == "compra_agil" else li_ids
+        ids = _fila_ids_por_licitacion(licitacion.strip()).get(tabla_export, [])
         if not ids:
             cond.append("1=0")
         else:
@@ -907,10 +930,9 @@ def _supergrupo(fila: dict) -> tuple:
 
     if es_nuevo:
         return ("z1_nuevo", "⚠ PACTIVOS NUEVOS · Claude propuso fuera de catálogo")
-    if pact == "Adjunto" and tabla == "compra_agil":
-        return ("y1_adj_ca", "📎 ADJUNTOS · COMPRAS ÁGILES")
-    if pact == "Adjunto" and tabla == "Licitaciones_diarias":
-        return ("y2_adj_li", "📎 ADJUNTOS · LICITACIONES")
+    if pact == "Adjunto" and tabla in TABLAS_VALIDAS:
+        i = TABLAS_VALIDAS.index(tabla) + 1
+        return (f"y{i}_adj", f"📎 ADJUNTOS · {_etiqueta_fuente(tabla).upper()}")
     if interes == 1:
         if metodo in ("cruce_base", "historico"):
             return ("a1_int_hist", "🟢 INTERÉS · Cruce histórico (OC reales + descripción ya clasificada)")
@@ -937,19 +959,19 @@ def _supergrupo(fila: dict) -> tuple:
 
 
 def _fila_ids_por_licitacion(numero: str) -> "tuple[list, list]":
-    """Busca el número de licitación/compra ágil en las 2 tablas origen y
-    devuelve (compra_agil_ids, licitaciones_ids). El revisor escribe el número
-    en el filtro y vemos exactamente esa fila. Match LIKE para tolerar prefijos."""
+    """Busca el número de licitación/compra ágil/cotización en las tablas origen
+    y devuelve {tabla: [ids]}. El revisor escribe el número en el filtro y vemos
+    exactamente esa fila. Match LIKE para tolerar prefijos."""
+    out: dict = {t: [] for t in TABLAS_VALIDAS}
     if not numero:
-        return ([], [])
-    out = ([], [])
-    for i, t in enumerate(TABLAS_VALIDAS):
+        return out
+    for t in TABLAS_VALIDAS:
         try:
             r = _query(
                 f"SELECT id FROM `{t}` WHERE Licitacion LIKE %s LIMIT 200",
                 (f"%{numero}%",),
             )
-            out[i].extend(x["id"] for x in r if "id" in x)
+            out[t].extend(x["id"] for x in r if "id" in x)
         except Exception:  # noqa: BLE001
             pass
     return out
@@ -1007,15 +1029,7 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
     # creado_en (cuándo la IA la procesó). La fecha de publicación vive en la
     # tabla origen — subconsulta correlacionada por PK. Acepta fecha sola o
     # datetime-local para cortes por hora/turno.
-    _SQL_PUB_FECHA = (
-        "COALESCE("
-        "(SELECT ca.Fecha_Publicacion FROM compra_agil ca "
-        "WHERE ca.id=clasificador_ia_log.fila_id "
-        "AND clasificador_ia_log.tabla_origen='compra_agil'),"
-        "(SELECT ld.Fecha_Publicacion FROM Licitaciones_diarias ld "
-        "WHERE ld.id=clasificador_ia_log.fila_id "
-        "AND clasificador_ia_log.tabla_origen='Licitaciones_diarias'))"
-    )
+    _SQL_PUB_FECHA = _sql_col_origen("Fecha_Publicacion")
     _d = _norm_fecha(desde, fin=False)
     _h = _norm_fecha(hasta, fin=True)
     if _d:
@@ -1041,16 +1055,12 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
     # Filtro por número de licitación / compra ágil: pre-resuelve los fila_id
     # en la tabla origen para no JOIN-ear en cada query.
     if licitacion:
-        ca_ids, li_ids = _fila_ids_por_licitacion(licitacion.strip())
         partes = []
-        if ca_ids:
-            ph = ",".join(["%s"] * len(ca_ids))
-            partes.append(f"(tabla_origen='compra_agil' AND fila_id IN ({ph}))")
-            args.extend(ca_ids)
-        if li_ids:
-            ph = ",".join(["%s"] * len(li_ids))
-            partes.append(f"(tabla_origen='Licitaciones_diarias' AND fila_id IN ({ph}))")
-            args.extend(li_ids)
+        for _t, _ids in _fila_ids_por_licitacion(licitacion.strip()).items():
+            if _ids:
+                ph = ",".join(["%s"] * len(_ids))
+                partes.append(f"(tabla_origen='{_t}' AND fila_id IN ({ph}))")
+                args.extend(_ids)
         if not partes:
             cond.append("1=0")  # nada encontrado → no devuelve nada
         else:
@@ -1063,33 +1073,21 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
     # lookup, no se "queda pegado". El worker IA igual procesa TODO (esté o no
     # clasificado en el legacy); esto solo filtra lo que el revisor VE como pendiente.
     if estado == "pendientes":
-        cond.append(
-            "NOT EXISTS (SELECT 1 FROM compra_agil ca "
-            "WHERE ca.id=clasificador_ia_log.fila_id "
-            "AND clasificador_ia_log.tabla_origen='compra_agil' "
-            "AND ca.estado_gestor IS NOT NULL AND ca.nombre_clasificador IS NOT NULL "
-            "AND ca.nombre_clasificador NOT REGEXP '^(Bot|BOT|IA_|Bot Eliminado)')"
-        )
-        cond.append(
-            "NOT EXISTS (SELECT 1 FROM Licitaciones_diarias ld "
-            "WHERE ld.id=clasificador_ia_log.fila_id "
-            "AND clasificador_ia_log.tabla_origen='Licitaciones_diarias' "
-            "AND ld.estado_gestor IS NOT NULL AND ld.nombre_clasificador IS NOT NULL "
-            "AND ld.nombre_clasificador NOT REGEXP '^(Bot|BOT|IA_|Bot Eliminado)')"
-        )
+        for _t in TABLAS_VALIDAS:
+            cond.append(
+                f"NOT EXISTS (SELECT 1 FROM `{_t}` o "
+                "WHERE o.id=clasificador_ia_log.fila_id "
+                f"AND clasificador_ia_log.tabla_origen='{_t}' "
+                "AND o.estado_gestor IS NOT NULL AND o.nombre_clasificador IS NOT NULL "
+                "AND o.nombre_clasificador NOT REGEXP '^(Bot|BOT|IA_|Bot Eliminado)')"
+            )
     where = " AND ".join(cond)
     # Para REVISADAS ordeno por revisado_en DESC (lo más recientemente cerrado
     # primero — es lo que el revisor quiere ver para auditar). Para pendientes,
     # ordeno PRIMERO por supergrupo (interés cruce histórico va primero,
     # claude/conflictos al final) — el revisor procesa por bloques afines.
     # Subconsulta correlacionada: la fecha de cierre vive en la tabla origen.
-    _SQL_CIERRE = (
-        "COALESCE("
-        "(SELECT ca.Fecha_Cierre FROM compra_agil ca WHERE ca.id=clasificador_ia_log.fila_id "
-        "AND clasificador_ia_log.tabla_origen='compra_agil'),"
-        "(SELECT ld.Fecha_Cierre FROM Licitaciones_diarias ld WHERE ld.id=clasificador_ia_log.fila_id "
-        "AND clasificador_ia_log.tabla_origen='Licitaciones_diarias'))"
-    )
+    _SQL_CIERRE = _sql_col_origen("Fecha_Cierre")
     if estado == "revisadas":
         orden = "revisado_en DESC"
     elif not es_admin:
@@ -1104,8 +1102,7 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
         orden = """
         CASE
           WHEN pactivo_nuevo IS NOT NULL AND pactivo_nuevo<>'' THEN 'z1'
-          WHEN pactivo_sugerido='Adjunto' AND tabla_origen='compra_agil' THEN 'y1'
-          WHEN pactivo_sugerido='Adjunto' AND tabla_origen='Licitaciones_diarias' THEN 'y2'
+""" + _sql_case_adjunto() + """
           WHEN interes_sugerido=1 AND metodo IN ('cruce_base','historico') THEN 'a1'
           WHEN interes_sugerido=1 AND metodo='modelo_pactivo' THEN 'a2'
           WHEN interes_sugerido=1 AND metodo='regla_diccionario' THEN 'a3'
@@ -1230,8 +1227,7 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
         + "<label>Tabla</label>"
         f"<select name=tabla onchange='this.form.submit()'>"
         + opt("", "todas", tabla)
-        + opt("compra_agil", "compra ágil", tabla)
-        + opt("Licitaciones_diarias", "licitaciones", tabla)
+        + "".join(opt(_t, _etiqueta_fuente(_t).lower(), tabla) for _t in TABLAS_VALIDAS)
         + "</select>"
         "<label>Tipo</label>"
         f"<select name=tipo onchange='this.form.submit()'>"
@@ -1338,17 +1334,18 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
         # cola del worker: estado_gestor NULL (nadie la clasificó) y no está en el
         # log. Mismo criterio que detector.filas_pendientes, para que el número del
         # cartel sea exactamente lo que el worker va a tomar en el próximo ciclo.
-        _falt_ca = _query(
-            "SELECT COUNT(*) n FROM compra_agil t WHERE t.estado_gestor IS NULL "
-            "AND NOT EXISTS (SELECT 1 FROM clasificador_ia_log l "
-            "WHERE l.tabla_origen='compra_agil' AND l.fila_id=t.id)"
-        )[0]["n"]
-        _falt_li = _query(
-            "SELECT COUNT(*) n FROM Licitaciones_diarias t WHERE t.estado_gestor IS NULL "
-            "AND NOT EXISTS (SELECT 1 FROM clasificador_ia_log l "
-            "WHERE l.tabla_origen='Licitaciones_diarias' AND l.fila_id=t.id)"
-        )[0]["n"]
-        _falt = _falt_ca + _falt_li
+        # Sólo las fuentes que el worker procesa (FUENTES_WORKER): una fuente
+        # registrada pero apagada no es "cola atrasada".
+        from fuentes import fuentes_worker as _fw
+        _falt_por = {
+            _t: _query(
+                f"SELECT COUNT(*) n FROM `{_t}` t WHERE t.estado_gestor IS NULL "
+                "AND NOT EXISTS (SELECT 1 FROM clasificador_ia_log l "
+                "WHERE l.tabla_origen=%s AND l.fila_id=t.id)", (_t,)
+            )[0]["n"]
+            for _t in _fw()
+        }
+        _falt = sum(_falt_por.values())
         _min_ult = int((_now - _ult).total_seconds() // 60) if _ult else None
         # El worker cicla cada 3 min. Si hay cola y hace >15 min que no escribe una
         # fila, está caído o cortado por fallos de API (p.ej. sin crédito) — eso es
@@ -1365,8 +1362,8 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
         # MAX(Fecha_Publicacion) usa el índice de ambas tablas (medido: 0,01 s).
         _ing = [
             x for x in (
-                _query("SELECT MAX(Fecha_Publicacion) m FROM compra_agil")[0]["m"],
-                _query("SELECT MAX(Fecha_Publicacion) m FROM Licitaciones_diarias")[0]["m"],
+                _query(f"SELECT MAX(Fecha_Publicacion) m FROM `{_t}`")[0]["m"]
+                for _t in _falt_por
             ) if x and not isinstance(x, str)
         ]
         _ing_max = max(_ing) if _ing else None
@@ -1383,7 +1380,8 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
             f"<div class='worker-st worker-{_cls}'>"
             f"<b>Worker {_msg_ok}</b> · {_ult_txt} · "
             f"pendientes en cola: {_falt} "
-            f"(compra ágil {_falt_ca} · licitaciones {_falt_li})."
+            "(" + " · ".join(f"{_etiqueta_fuente(_t).lower()} {_n}"
+                             for _t, _n in _falt_por.items()) + ")."
             f"{_ing_txt}"
             f"</div>"
         )
@@ -1411,8 +1409,7 @@ def revision(request: Request, hoja: int = 1, msg: str = "", tabla: str = "",
                 "SELECT COUNT(*) n, "
                 "CASE "
                 "  WHEN pactivo_nuevo IS NOT NULL AND pactivo_nuevo<>'' THEN 'z1' "
-                "  WHEN pactivo_sugerido='Adjunto' AND tabla_origen='compra_agil' THEN 'y1' "
-                "  WHEN pactivo_sugerido='Adjunto' AND tabla_origen='Licitaciones_diarias' THEN 'y2' "
+                + _sql_case_adjunto() + " "
                 "  WHEN interes_sugerido=1 AND metodo IN ('cruce_base','historico') THEN 'a1' "
                 "  WHEN interes_sugerido=1 AND metodo='modelo_pactivo' THEN 'a2' "
                 "  WHEN interes_sugerido=1 AND metodo='regla_diccionario' THEN 'a3' "
@@ -2171,8 +2168,7 @@ def estadisticas(request: Request, tabla: str = "compra_agil",
   <div class=card>
     <label style='font-size:11px;color:#6b7689'>Tabla</label>
     <select id=f_tabla onchange='cargar()'>
-      <option value='compra_agil'{' selected' if tabla == 'compra_agil' else ''}>Compras ágiles</option>
-      <option value='Licitaciones_diarias'{' selected' if tabla == 'Licitaciones_diarias' else ''}>Licitaciones</option>
+      {"".join(f"<option value='{_t}'{' selected' if tabla == _t else ''}>{_e(_etiqueta_fuente(_t))}</option>" for _t in TABLAS_VALIDAS)}
     </select>
   </div>
   <div class=card>
@@ -3123,7 +3119,7 @@ def reeditar_revisada(request: Request, log_id: int,
                 return RedirectResponse("/revision?estado=revisadas&msg=Log no existe.",
                                         status_code=303)
             tabla_o = r["tabla_origen"]
-            if tabla_o not in ("compra_agil", "Licitaciones_diarias"):
+            if tabla_o not in TABLAS_VALIDAS:
                 return RedirectResponse("/revision?estado=revisadas&msg=Tabla inválida.",
                                         status_code=303)
             cur.execute(

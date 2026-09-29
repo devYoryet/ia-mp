@@ -10,3 +10,7 @@ modelo_pactivo.joblib
 # Modelo de marcas (~76 MB) — entrenado y persistido en /opt/ia-mp del host
 # (ver entrenar_marcas.py). Auto-deploy lo copia al image en el build.
 modelo_marcas.joblib
+
+# Resultados de backtest_cascada.py — son mediciones locales de una ventana
+# concreta, no código. Se regeneran corriendo el harness.
+backtest_resultados/

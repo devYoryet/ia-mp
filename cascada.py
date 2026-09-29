@@ -27,6 +27,7 @@ from typing import Optional
 import clasificador_claude as cc
 import cruce_base
 import descarte_modelo
+import fuentes
 import modelo_adjunto as madj
 import modelo_marcas as mm
 import modelo_pactivo as mp
@@ -494,6 +495,11 @@ def clasificar_fila(
     `marcas_texto` (opcional) llega solo a Claude como bloque cacheable de
     `marcas → pactivo` inequívocas del catálogo activo (ver `marcas.cargar_marcas_para_prompt`)."""
     ctx: dict = {}  # trazabilidad: las ramas que anulan por veto escriben aquí
+    # Preparación por FUENTE (fuentes.py): en cotizaciones quita el sufijo UNSPSC
+    # que el scraper pega a la glosa. Para compra_agil/Licitaciones_diarias
+    # devuelve la misma fila, sin cambios. Es una copia: el llamador conserva la
+    # fila cruda (escritor registra lo que ve la persona).
+    fila = fuentes.preparar_fila(tabla, fila)
     r = _clasificar_fila_impl(
         tabla, fila, taxonomia, pactivos_norm, descartes, cruce, combinaciones,
         modelo_descarte, ejemplos, indice_inverso, modelo_pactivo, marcas_texto,
@@ -651,7 +657,10 @@ def _clasificar_fila_impl(
     # descarte_item corre igual abajo. No agrega costo de Claude (es lookup en
     # memoria). Medido: cruce_base 0 FN, histórico 6, descarte_item 30 FN/30d —
     # de esos 30, 4 tenían match histórico-interés y este reorden los rescata.
-    p = preclasificador.buscar_en_historico(tabla, descripcion, fila.get("id", 0))
+    # `_desc_historico`: glosa CRUDA si la fuente la limpió (cotizaciones) — su
+    # histórico está guardado con el sufijo, el match exacto va contra lo crudo.
+    p = preclasificador.buscar_en_historico(
+        tabla, fila.get("_desc_historico") or descripcion, fila.get("id", 0))
     # Validar contra catálogo ACTIVO: el histórico puede devolver un pactivo que
     # ya fue REMOVIDO del catálogo (caso medido 2026-06-01: 'Guante' no está en
     # Base ni en el diccionario filtrado por clientes activos, pero el histórico

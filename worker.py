@@ -36,6 +36,7 @@ from modelo_marcas import cargar_modelo_marcas
 from modelo_pactivo import cargar_modelo_pactivo
 import vetos_dinamicos as _vd
 from ejemplos import cargar_ejemplos
+from fuentes import fuentes_worker, precargar_sufijos
 from marcas import cargar_marcas_para_prompt
 from preclasificador import precargar_comp_pres
 from reglas import indexar_combinaciones, indexar_inverso_pactivos, indexar_pactivos
@@ -48,7 +49,9 @@ logging.basicConfig(
 )
 log = logging.getLogger("worker")
 
-TABLAS = ["compra_agil", "Licitaciones_diarias"]
+# Qué tablas clasifica: FUENTES_WORKER del .env (default compra_agil +
+# Licitaciones_diarias). El registro completo está en fuentes.py.
+TABLAS = fuentes_worker()
 MAX_FALLOS_SEGUIDOS = 5  # corte de circuito ante fallos repetidos de la API
 REFRESCO_SEGUNDOS = 24 * 3600  # refresco diario de las estructuras en memoria
 
@@ -60,6 +63,7 @@ def cargar_recursos() -> dict:
     log.info("Cargando recursos (Base + %s.diccionario)...", config.db_diccionario)
     taxonomia = reintentar(cargar_taxonomia)
     reintentar(lambda: precargar_comp_pres(TABLAS))
+    reintentar(lambda: precargar_sufijos(TABLAS))
     contexto = "\n\n".join(p for p in (cargar_ejemplos(), cargar_feedback()) if p)
     recursos = {
         "taxonomia": taxonomia,
@@ -141,7 +145,8 @@ def main() -> None:
         log.error("Falta ANTHROPIC_API_KEY en .env — no se puede clasificar.")
         sys.exit(1)
 
-    log.info("=== Clasificador IA · modo: %s ===", config.modo.upper())
+    log.info("=== Clasificador IA · modo: %s · fuentes: %s ===",
+             config.modo.upper(), ", ".join(TABLAS))
     if config.modo not in ("test", "produccion"):
         log.error("MODO inválido: %s (usar 'test' o 'produccion')", config.modo)
         sys.exit(1)

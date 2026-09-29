@@ -37,14 +37,13 @@ from datetime import datetime
 from pathlib import Path
 
 from db import conectar
+from fuentes import TABLAS_VALIDAS
 
 log = logging.getLogger("sync_pendientes")
 
 # Dentro del container está montado como /app/pending. En el host es
 # /opt/ia-mp/pending (ver docker-compose.yml).
 PENDING_DIR = Path("/app/pending")
-
-TABLAS_VALIDAS = ("compra_agil", "Licitaciones_diarias")
 
 
 def _aplicar_item(cur, item: dict, revisor: str, ahora: datetime) -> str:

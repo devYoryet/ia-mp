@@ -19,11 +19,13 @@ import logging
 
 from config import config
 from db import conexion_worker
+from fuentes import FUENTES
 
 log = logging.getLogger("descarte_items")
 
-# Columna de rubro por tabla — es lo que se cruza contra el conjunto.
-COLUMNA_RUBRO = {"compra_agil": "Item", "Licitaciones_diarias": "Cod_Onu"}
+# Columna de rubro por tabla — es lo que se cruza contra el conjunto. Sale del
+# registro de fuentes (fuentes.py): cotizaciones usa `Item`, como compra_agil.
+COLUMNA_RUBRO = {t: f.columna_rubro for t, f in FUENTES.items()}
 
 # Códigos clasificados por personas que, vistos al menos `min_vistas` veces,
 # terminaron SIEMPRE descartados: SUM(estado_gestor <> 0) = 0.
