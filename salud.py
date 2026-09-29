@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import time
 from datetime import datetime, timedelta
@@ -58,6 +59,13 @@ MYSQL = dict(
 )
 
 BUDGET_TOTAL = float(_ENV.get("BUDGET_USD", "350"))
+# Fuentes que procesa el worker (mismo default que fuentes.fuentes_worker). No se
+# importa fuentes.py: este script corre con el python3 del HOST, no del container.
+# Sólo nombres de tabla simples: el valor se interpola en un SQL.
+_FUENTES_WORKER = [
+    t.strip() for t in _ENV.get("FUENTES_WORKER", "compra_agil,Licitaciones_diarias").split(",")
+    if re.fullmatch(r"[A-Za-z_]+", t.strip())
+]
 # Presupuesto reservado para el experimento de backtest paralelo de 7 días.
 # Se compara contra el costo neto últimos 7d (test + ajuste, excluye prod).
 BUDGET_BACKTEST = float(_ENV.get("BUDGET_BACKTEST_USD", "65"))
@@ -234,7 +242,7 @@ def metricas_costo() -> dict:
 # --- Métricas: PRODUCCIÓN backlog y feedback humano -----------------------
 def metricas_produccion() -> dict:
     out = {}
-    for t in ("compra_agil", "Licitaciones_diarias"):
+    for t in _FUENTES_WORKER:
         pend = _query(
             f"SELECT COUNT(*) n FROM `{t}` WHERE estado_gestor IS NULL "
             f"AND (nombre_clasificador IS NULL OR nombre_clasificador='')"
@@ -407,8 +415,8 @@ def render(snap: dict, alertas: list[str]) -> str:
     out.append("")
 
     out.append("PRODUCCIÓN")
-    out.append(f"  Pendientes compra_agil: {_fila(prod, 'compra_agil_pendientes', '{:,}')}")
-    out.append(f"  Pendientes Licitaciones: {_fila(prod, 'Licitaciones_diarias_pendientes', '{:,}')}")
+    for t in _FUENTES_WORKER:
+        out.append(f"  Pendientes {t}: {_fila(prod, f'{t}_pendientes', '{:,}')}")
     if prod.get("revisadas_7d"):
         ratio_fn = (prod['fn_7d'] or 0) / prod['revisadas_7d'] * 100
         out.append(f"  Revisadas 7d: {prod['revisadas_7d']:,} · falsos negativos: "
