@@ -14,7 +14,7 @@ salvo donde se indica.
 | | compra ágil | licitaciones | **cotizaciones** | trato directo | consulta al mercado |
 |---|---|---|---|---|---|
 | tabla | `compra_agil` | `Licitaciones_diarias` | `cotizaciones` | `trato_directo_detalles` (+ `_listado`) | `consulta_mercado` (+ `preguntas_consulta_mercado`) |
-| en la IA | ✅ producción | ✅ producción | 🟡 registrada; worker apagado (`FUENTES_WORKER`) | ⬜ no | ⬜ no |
+| en la IA | ✅ producción | ✅ producción | ✅ producción desde 2026-09-29 (`FUENTES_WORKER`) | ⬜ no | ⬜ no |
 | una fila es | una línea | una línea | una línea | una línea | la consulta completa |
 | código de rubro | `Item` (UNSPSC) | **`Cod_Onu`** (UNSPSC) | `Item` (UNSPSC) | no hay; `producto_servicio` trae el nombre UNSPSC en texto | no hay |
 | nº de línea | `Cod_Onu` | `Item` | `Cod_Onu` | `id` | — |
@@ -122,6 +122,12 @@ midió con backtest de 12 semanas (4.082 filas reales, $0), un cambio por corrid
   - Esa rama no se puede medir sin gastar API.
   - Costo inferido: centavos al mes.
 - **Pendiente:** `modelo_marcas` quedó con la mayor parte del error restante (14 filas, 9 FP). Es el mismo patrón: los modelos entrenados con compra ágil y licitaciones no transfieren bien.
+
+**Activación (2026-09-29):**
+- `FUENTES_WORKER=compra_agil,Licitaciones_diarias,cotizaciones` en `/opt/ia-mp/.env` (respaldo `.env.bak.*-cotizaciones`).
+- Al arrancar: 5.352 sufijos UNSPSC aprendidos, 788 códigos siempre-descartados y comp/pres de 932 pactivos.
+- Primer ciclo: 9 filas, 8 descartes correctos y 1 interés por histórico, $0.
+- Costo esperado (inferido): ~10 % de ~1.700 filas/mes llega a Claude, ~170 llamadas × $0,0042 ≈ **$0,70/mes**. Peor caso (todas a Claude): ~$7/mes.
 
 **Bug conocido del legacy** (no es de este repo): `CotizacionesController::remove`
 borra de `..._clientes_agil` en vez de `..._clientes_cotizaciones`. Descartar
