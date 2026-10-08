@@ -1,7 +1,10 @@
 # Fase 2 (Device / Servicio técnico) — proyecto Docker APARTE del clasificador.
 #
 # No comparte imagen, red, volúmenes ni .env con ia-mp (worker/panel), y el
-# auto-deploy de main no lo toca. Se despliega a mano en gestor_oc:
+# auto-deploy de main no lo toca. Dos containers de la misma imagen:
+#   fase2  → servicio.py: barrido rápido cada 10 min y profundo diario
+#   panel  → panel.py:    revisión (aprobar / no aprobar), puerto 8810
+# Se despliega a mano en gestor_oc:
 #     cd /opt/ia-mp-fase2/fase2 && ./desplegar.sh
 # Apagarlo no afecta a nada:   docker compose down
 name: ia-mp-fase2
@@ -23,5 +26,21 @@ services:
     # Límites: gestor_oc tiene 2 cores y 7,8 GB; el worker usa ~2 GB. La fase 2
     # no puede quitarle recursos aunque se descontrole.
     mem_limit: 768m
+    cpus: "0.5"
+    logging: *log
+
+  panel:
+    build: .
+    image: clasificador-f2:latest
+    container_name: ia-mp-fase2-panel
+    command: uvicorn panel:app --host 0.0.0.0 --port 8810
+    env_file: .env
+    # Puerto propio (el panel del clasificador usa 8800). Accesible en la red
+    # interna / VPN: http://10.0.0.70:8810. Publicarlo bajo el dominio es una
+    # location nueva en nginx, que no se hace sin pedirlo.
+    ports:
+      - "8810:8810"
+    restart: unless-stopped
+    mem_limit: 384m
     cpus: "0.5"
     logging: *log

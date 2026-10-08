@@ -1,2 +1,12 @@
-# Única dependencia, fijada: la imagen de la fase 2 no comparte nada con la del clasificador.
+# Fijadas, y las del panel iguales a las del panel del clasificador en producción
+# (pip freeze de ia-mp-panel-1, 2026-10-08). La imagen de la fase 2 no comparte
+# nada con la del clasificador.
 pymysql==1.1.2
+fastapi==0.143.0
+starlette==1.7.0
+pydantic==2.14.0
+uvicorn==0.54.0
+python-multipart==0.0.32
+bcrypt==5.0.0
+itsdangerous==2.2.0
+openpyxl==3.1.5

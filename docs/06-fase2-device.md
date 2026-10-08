@@ -1,10 +1,23 @@
 # 06 · Fase 2: Device y Servicio técnico (diseño, 2026-10-08)
 
-> Estado (2026-10-08): **E1 implementado** en la rama `fase2-device`, carpeta
-> [`fase2/`](../fase2/README.md). Tablas `clasificador_f2_*` creadas y semilla v1.1
-> cargada (huella `c304a41e56c8e525`). Backtest real en seco de 30 días: 293.409 filas en
-> 36 s, 64,4/día verde y 32,0/día revisión. **E2 (container) pendiente.**
-> Todos los números salen de datos reales medidos a $0 sin llamar a la API. Donde dice
+> Estado (2026-10-08): **E1 y E2 en producción.** Código en la rama `fase2-device`,
+> carpeta [`fase2/`](../fase2/README.md); container `ia-mp-fase2` en gestor_oc
+> (`/opt/ia-mp-fase2`). Tablas `clasificador_f2_*` creadas, semilla v1.1 cargada
+> (huella `c304a41e56c8e525`).
+>
+> - **Candados:** `admin.py verificar` corrido desde el servidor rechazó 11 de 11 escrituras ajenas.
+> - **Carga inicial (60 días):** 619.332 filas en 181 s; 4.326 en verde (≈72/día) y 1.935 a
+>   revisión (≈32/día). 108 venían de "IA dijo interés y una persona eliminó después";
+>   409, de `Bot Eliminado`.
+> - **Producción intacta:** misma imagen, worker y panel sin reinicio, md5 idénticos; worker
+>   a ritmo normal durante la carga.
+>
+> - **E3 (panel de revisión):** container `ia-mp-fase2-panel`, http://10.0.0.70:8810 (red interna /
+>   VPN), con el login del equipo. Vistas Revisión / Verde / Revisadas / Anuladas, Excel y Resumen
+>   (precisión medida y salud del barrido). Publicarlo en el dominio requiere una location en nginx
+>   (no se hizo).
+>
+> Los números salen de datos reales medidos a $0, sin llamar a la API. Donde dice
 > *inferido* es una estimación sobre muestras revisadas a mano, no una medición.
 
 ## Para qué

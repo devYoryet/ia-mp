@@ -15,7 +15,7 @@ Si calzan las dos señales, la fila queda en **verde**. Si calza una sola, va a
 | candado | cómo se comprueba |
 |---|---|
 | **Código aparte.** Rama `fase2-device` y carpeta `fase2/`. No modifica ni importa ningún archivo de la fase 1. `main` no recibe commits, así que el auto-deploy no corre y worker y panel no se reconstruyen. | `git diff --stat origin/main...fase2-device` muestra sólo archivos nuevos |
-| **Proceso aparte.** Container `ia-mp-fase2` (proyecto Docker `ia-mp-fase2`, imagen `clasificador-f2`) con límites de 0,5 CPU y 768 MB. No comparte imagen, red, volúmenes ni `.env` con `ia-mp`. | `docker inspect` del worker y del panel: misma imagen, mismo `StartedAt` |
+| **Procesos aparte.** Containers `ia-mp-fase2` (barrido, 0,5 CPU y 768 MB) e `ia-mp-fase2-panel` (revisión, puerto 8810, 0,5 CPU y 384 MB). Son el proyecto Docker `ia-mp-fase2`, imagen `clasificador-f2`. No comparten imagen, red, volúmenes ni `.env` con `ia-mp`; el panel del clasificador (`api/main.py`, puerto 8800) no se toca. | `docker inspect` del worker y del panel: misma imagen, mismo `StartedAt` |
 | **Usuario MySQL propio** `ia_fase2`: `SELECT` sobre el schema; `INSERT`/`UPDATE` sólo en `clasificador_f2_resultado`, `_onu_nombre` y `_corridas`. Sin `DELETE` ni DDL, máximo 4 conexiones. | `python admin.py verificar`: MySQL rechaza cada escritura en tablas ajenas |
 | **Candados en el código.** La conexión de lectura es `READ ONLY`. La de escritura valida el destino antes de enviar la sentencia. El servicio no corre con `root`. | `tests/test_candados.py` |
 | **Tablas nuevas** con prefijo `clasificador_f2_`. Ningún listado por patrón existente las incluye (`clasificador_ia_%`). | `schema.sql` sólo crea tablas `clasificador_f2_*` |
@@ -30,6 +30,7 @@ Si calzan las dos señales, la fila queda en **verde**. Si calza una sola, va a
 | `reconciliar.py` | qué hacer con cada fila: insertar, actualizar, anular si pasó a farma. Nunca pisa una decisión humana |
 | `barrido.py` | lee las fuentes por bloques de PK y escribe sólo en `clasificador_f2_*` |
 | `servicio.py` | loop: barrido rápido (3 días) cada 10 minutos, profundo (60 días) a diario y cuando cambian las reglas |
+| `panel.py` | panel de revisión en http://10.0.0.70:8810 (red interna / VPN), con el login del equipo. Sólo escribe las columnas de revisión humana |
 | `backtest_fase2.py` | mide sin escribir: volumen por categoría y señal, y precisión de lo revisado |
 | `admin.py` | tareas de una persona con credenciales de administrador: tablas, usuario, semilla, verificación |
 
