@@ -1,0 +1,27 @@
+# Fase 2 (Device / Servicio técnico) — proyecto Docker APARTE del clasificador.
+#
+# No comparte imagen, red, volúmenes ni .env con ia-mp (worker/panel), y el
+# auto-deploy de main no lo toca. Se despliega a mano en gestor_oc:
+#     cd /opt/ia-mp-fase2/fase2 && ./desplegar.sh
+# Apagarlo no afecta a nada:   docker compose down
+name: ia-mp-fase2
+
+x-logging: &log
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "3"
+
+services:
+  fase2:
+    build: .
+    image: clasificador-f2:latest
+    container_name: ia-mp-fase2
+    command: python servicio.py
+    env_file: .env
+    restart: unless-stopped
+    # Límites: gestor_oc tiene 2 cores y 7,8 GB; el worker usa ~2 GB. La fase 2
+    # no puede quitarle recursos aunque se descontrole.
+    mem_limit: 768m
+    cpus: "0.5"
+    logging: *log

@@ -1,0 +1,2 @@
+# Única dependencia, fijada: la imagen de la fase 2 no comparte nada con la del clasificador.
+pymysql==1.1.2
