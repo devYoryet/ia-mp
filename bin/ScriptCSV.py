@@ -11,7 +11,14 @@ from math import ceil
 
 # Campos de texto largo (VARCHAR 500); el resto va a 255.
 CAMPOS_LARGOS = {"Descripcion", "EspecificacionComprador",
-                 "EspecificacionProveedor", "EspecificacionTotal"}
+                 "EspecificacionProveedor"}
+
+# EspecificacionTotal NO viene en el CSV: es EspecificacionComprador + " " +
+# EspecificacionProveedor (asi se cargo 202510..202601), la columna sobre la que
+# Prime aplica los diccionarios de OC Mercado Total (LIKE '%palabra%'). De
+# 202602 a 202609 se mapeo a NombreroductoGenerico (= Producto, nombre ONU) y
+# los diccionarios buscaban en el nombre del rubro, no en la glosa. Se arma con
+# el texto SIN cortar (Comprador pasa de 500 en ~0,3% de filas) y va en TEXT.
 
 # Mapeo columna_destino -> variantes normalizadas del origen. UNICA fuente de
 # verdad: la usan tanto el camino pandas (Excel) como el streaming (CSV grande).
@@ -39,12 +46,15 @@ COL_VARIANTS = {
     "CantidadItem": ["cantidad", "cant"],
     "PrecioNetoItem": ["precioneto", "unitario"],
     "TotalItem": ["totallineaneto", "subtotal"],
-    "EspecificacionTotal": ["nombreroductogenerico", "nombre", "especificacion"],
 }
 
 
 def _norm_col(c):
     return str(c).lower().replace(" ", "").replace("_", "").replace("/", "")
+
+
+def _especificacion_total(comprador, proveedor):
+    return " ".join(p for p in (comprador, proveedor) if p)
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', line_buffering=True)
 sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', line_buffering=True)
@@ -186,6 +196,7 @@ def map_dataframe(df):
     df_cols_norm = {_norm_col(c): c for c in df.columns}
 
     out = pd.DataFrame()
+    completos = {}  # Comprador/Proveedor antes del corte, para EspecificacionTotal
     for col in TABLE_COLUMNS:
         found = None
         for variant in COL_VARIANTS.get(col, [_norm_col(col)]):
@@ -204,6 +215,9 @@ def map_dataframe(df):
                 # lee como "mes 26" -> NaT y se PIERDE la fecha (13k+/mes).
                 text_val = pd.to_datetime(text_val, format='%Y-%m-%d', errors='coerce').dt.strftime('%Y-%m-%d')
 
+            if col in ("EspecificacionComprador", "EspecificacionProveedor"):
+                completos[col] = text_val.replace(["nan", "NaN", "NA", "None", "nan ", "NaT"], "")
+
             text_val = text_val.str.slice(0, 500 if col in CAMPOS_LARGOS else 255)
 
             if col == "FechaEnvio":
@@ -213,6 +227,12 @@ def map_dataframe(df):
         else:
             out[col] = None if col == "FechaEnvio" else ""
 
+    vacio = [""] * len(df)
+    out["EspecificacionTotal"] = [
+        _especificacion_total(c, p)
+        for c, p in zip(completos.get("EspecificacionComprador", vacio),
+                        completos.get("EspecificacionProveedor", vacio))
+    ]
     return out
 
 
@@ -230,12 +250,14 @@ def create_table_if_not_exists(conn, table_name):
     cursor = conn.cursor()
     columns_sql = []
     
-    campos_largos = ["Descripcion", "EspecificacionComprador", "EspecificacionProveedor", "EspecificacionTotal"]
+    campos_largos = ["Descripcion", "EspecificacionComprador", "EspecificacionProveedor"]
     campos_medios = ["Nombre", "NombreOrganismo", "NombreUnidad", "NombreProveedor", "Producto", "Categoria"]
 
     for col in TABLE_COLUMNS:
         if col == "FechaEnvio":
             columns_sql.append(f"`{col}` DATE NULL")
+        elif col == "EspecificacionTotal":
+            columns_sql.append(f"`{col}` TEXT NULL")
         elif col in campos_largos:
             columns_sql.append(f"`{col}` VARCHAR(500) NULL")
         elif col in campos_medios:
@@ -411,6 +433,14 @@ _RE_WS = __import__("re").compile(r"[\r\n]+")
 _NULOS = {"nan", "na", "none", "nat", "null"}
 
 
+def _texto(raw):
+    """Texto limpio SIN cortar: saltos de linea -> espacio, nulos -> ''."""
+    if raw is None:
+        return ""
+    s = _RE_WS.sub(" ", raw).strip()
+    return "" if s.lower() in _NULOS else s
+
+
 def _limpiar_valor(col, raw):
     """Mismo mapeo/limpieza que map_dataframe, pero por valor (sin pandas).
     Devuelve str (texto) o None (NULL para FechaEnvio)."""
@@ -493,16 +523,23 @@ def importar_csv_streaming(path, table_name, servers, db_name,
             reader = _csv.reader(f, delimiter=";")
             header = next(reader)
             idx = _build_col_index(header)
+            j_comp = idx["EspecificacionComprador"]
+            j_prov = idx["EspecificacionProveedor"]
+            i_total = TABLE_COLUMNS.index("EspecificacionTotal")
             lote = []
             ncols = len(header)
             for fila in reader:
                 if not fila:
                     continue
-                rec = tuple(
+                rec = [
                     _limpiar_valor(col, fila[idx[col]] if (idx[col] is not None and idx[col] < len(fila)) else None)
                     for col in TABLE_COLUMNS
+                ]
+                rec[i_total] = _especificacion_total(
+                    _texto(fila[j_comp] if (j_comp is not None and j_comp < len(fila)) else None),
+                    _texto(fila[j_prov] if (j_prov is not None and j_prov < len(fila)) else None),
                 )
-                lote.append(rec)
+                lote.append(tuple(rec))
                 if len(lote) >= batch_size:
                     _flush(lote)
                     print("    Progreso: {0} filas en primario {1}".format(
