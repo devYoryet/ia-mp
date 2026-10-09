@@ -104,3 +104,33 @@ def test_version_estable_y_sensible():
     inact = copy.deepcopy(semilla.CATEGORIAS)
     inact[0]["terminos"].append({"nombre": "z", "regex": "z", "contexto": None, "activa": False})
     assert motor.version(inact) == v
+
+
+def test_sufijo_onu_de_cotizaciones():
+    from barrido import glosa_sin_sufijo_onu
+    assert glosa_sin_sufijo_onu("Talla M caja 100 Guantes quirúrgicos", "Guantes quirúrgicos") == "Talla M caja 100"
+    assert glosa_sin_sufijo_onu("Guantes quirúrgicos", "Guantes quirúrgicos") == "Guantes quirúrgicos"  # nunca vacía
+    assert glosa_sin_sufijo_onu("GUANTE NITRILO M", "Guantes quirúrgicos") == "GUANTE NITRILO M"
+    # sin el sufijo, la palabra ya no sale del nombre ONU: queda sólo la señal ONU (que en guantes no revisa)
+    assert ev(glosa_sin_sufijo_onu("Talla M caja 100 Guantes quirúrgicos", "Guantes quirúrgicos"), "42132205") is None
+
+
+@pytest.mark.parametrize("desc,cod,esperado", [
+    ("Se requiere la adquisición de guates de nitrilo talla S, acorde a las EETT.", "42132203", ("DEV-GUA", "verde", "ambas")),
+    ("GUANTES NITRILO (PRESENTACIÓN BOX 50 UNIDADES) ESPECIFICACIONES EN LISTADO ADJUNTO", "42132205", ("DEV-GUA", "verde", "ambas")),
+    ("GUANTES DE BOX 16 ONZ", "49171603", None),
+])
+def test_guantes_v12(desc, cod, esperado):
+    assert ev(desc, cod) == esperado
+
+
+def test_titulo_mas_onu_va_a_revision_nunca_a_verde():
+    t = "Adquisición de Guantes de Nitrilo para Laboratorio"
+    assert ev("Talla M - de acuerdo a especificaciones adjuntas", "42132203", titulo=t) == ("DEV-GUA", "revision", "titulo+onu")
+    # sin ONU de la categoría, el título solo no basta
+    assert ev("Talla M - de acuerdo a especificaciones adjuntas", "53102504", titulo=t) is None
+    # el paraguas de la licitación no pisa una glosa que ya calzó en otra categoría
+    r = motor.evaluar(CATS, "Microscopio binocular", "INSUMOS: GUANTES NITRILO, MICROSCOPIOS", "41111709")
+    assert (r.categoria, r.senal) == ("DEV-MIC", "ambas")
+    # exclusiones también miran el título
+    assert ev("Talla M", "46181504", titulo="Guantes de cabritilla para bodega") is None

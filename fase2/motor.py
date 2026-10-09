@@ -18,6 +18,10 @@ con dos señales independientes:
     revision  si Td y Of                            → 'palabra_debil+onu'
     revision  si Of, sin T ni Td, y la categoría
               tiene onu_solo_a_revision             → 'solo_onu'
+    revision  si NINGUNA categoría calzó en la glosa, pero un término (con su
+              contexto) está en el TÍTULO y el ONU calza (Oc) → 'titulo+onu'.
+              El título es el paraguas de toda la licitación (lección de la
+              fase 1): nunca da verde por sí solo.
 
 Una exclusión que calza anula la categoría completa. Si calzan varias
 categorías gana la primera en verde (por prioridad); si ninguna está en verde,
@@ -39,6 +43,10 @@ from dataclasses import dataclass
 log = logging.getLogger("fase2.motor")
 
 FUERZA = {"fuerte": 2, "confirma": 1}
+# Cambia cuando cambia la LÓGICA del motor (no la configuración). Entra en la
+# huella de `version`, así el servicio re-evalúa la ventana tras un deploy.
+#   1 = v1.1 (2026-10-08)  ·  2 = + señal 'titulo+onu'
+MOTOR_VERSION = "2"
 _ESPACIOS = re.compile(r"\s+")
 
 
@@ -168,6 +176,21 @@ def _evaluar_categoria(cat: Categoria, glosa: str, titulo: str, cod: str):
     return None
 
 
+def _evaluar_titulo(cat: Categoria, glosa: str, titulo: str, cod: str):
+    """Término (con su contexto) en el título + ONU de la categoría → revisión."""
+    if not titulo or not cod:
+        return None
+    for _n, rx in cat.excluye:
+        if rx.search(glosa) or rx.search(titulo):
+            return None
+    terms = [t.nombre for t in cat.terminos if t.regex.search(titulo)
+             and (t.contexto is None or t.contexto.search(titulo) or t.contexto.search(glosa))]
+    f, pref = _fuerza_onu(cat, cod)
+    if terms and f:
+        return "revision", "titulo+onu", terms, pref
+    return None
+
+
 def evaluar(categorias: list[Categoria], descripcion: str | None, titulo: str | None,
             codigo_onu: str | None) -> Resultado | None:
     """Evalúa una fila. `categorias` es la salida de `compilar`."""
@@ -177,6 +200,11 @@ def evaluar(categorias: list[Categoria], descripcion: str | None, titulo: str | 
         r = _evaluar_categoria(cat, glosa, tit, cod)
         if r:
             hits.append((cat, r))
+    if not hits:  # sólo si la glosa no dio nada: el título es una señal más débil
+        for cat in categorias:
+            r = _evaluar_titulo(cat, glosa, tit, cod)
+            if r:
+                hits.append((cat, r))
     if not hits:
         return None
     hits.sort(key=lambda h: 0 if h[1][0] == "verde" else 1)  # estable: respeta prioridad
@@ -190,7 +218,7 @@ def version(categorias: list[dict]) -> str:
     código ONU, fuerza, prioridad o flag; el servicio la usa para re-evaluar."""
     def _activos(xs):
         return [x for x in xs if x.get("activa", True)]
-    canon = [
+    canon = [MOTOR_VERSION] + [
         {
             "codigo": c["codigo"], "linea": c["linea"], "nombre": c["nombre"],
             "prioridad": int(c["prioridad"]), "onu_solo": bool(c["onu_solo_a_revision"]),

@@ -27,9 +27,21 @@ def test_inserta_descarte_que_calza():
     assert acc == "insertar" and c["categoria"] == "DEV-GUA" and c["version_reglas"] == "v1" and c["vigente"] == 1
 
 
-def test_no_inserta_interes_ni_lo_que_no_calza():
-    assert reconciliar(None, 1, AUTO, INFO, "v")[0] == "nada"
+def test_no_inserta_lo_que_no_calza():
+    assert reconciliar(None, 1, None, INFO, "v")[0] == "nada"   # interés farma que no es Device
     assert reconciliar(None, 0, None, INFO, "v")[0] == "nada"
+
+
+def test_interes_farma_que_tambien_es_device_entra_como_farma():
+    farma = campos_auto(RES, "farma")
+    acc, c = reconciliar(None, 1, farma, dict(INFO, pactivo_f1="Aposito"), "v")
+    assert acc == "insertar" and c["estado_auto"] == "farma" and c["pactivo_f1"] == "Aposito"
+    # si estaba anulada por "pasó a farma", vuelve como 'farma'
+    acc, c = reconciliar(previo(vigente=0, motivo_no_vigente=MOTIVO_FARMA), 1, farma, INFO, "v")
+    assert acc == "reactivar" and c["estado_auto"] == "farma"
+    # y si después la eliminan en farma, pasa a la revisión normal de Device
+    acc, c = reconciliar(previo(estado_auto="farma"), 0, AUTO, INFO, "v")
+    assert acc == "actualizar" and c["estado_auto"] == "verde"
 
 
 def test_rescate_farma_anula_aunque_este_revisada():

@@ -80,6 +80,7 @@ CREATE TABLE IF NOT EXISTS clasificador_f2_resultado (
   ia_metodo          VARCHAR(60),
   estado_gestor      TINYINT,                            -- estado en la tabla origen (NULL = sin confirmar)
   clasificador_f1    VARCHAR(80),                        -- quién fijó estado_gestor (persona o 'Bot Eliminado')
+  pactivo_f1         VARCHAR(255),                       -- pactivo de la fase 1 (filas 'farma': interés farma que además es Device)
   -- decisión automática de la fase 2
   categoria          VARCHAR(20)   NOT NULL,
   linea              VARCHAR(40)   NOT NULL,
@@ -87,7 +88,7 @@ CREATE TABLE IF NOT EXISTS clasificador_f2_resultado (
   subcategoria       VARCHAR(120),
   terminos           VARCHAR(500),
   senal              VARCHAR(30)   NOT NULL,             -- ambas | solo_palabra | palabra_debil+onu | solo_onu
-  estado_auto        VARCHAR(10)   NOT NULL,             -- verde | revision
+  estado_auto        VARCHAR(10)   NOT NULL,             -- verde | revision | farma (ya es interés farma, informativa)
   otras_categorias   VARCHAR(200),
   version_reglas     VARCHAR(16)   NOT NULL,
   vigente            TINYINT(1)    NOT NULL DEFAULT 1,   -- 0 = anulada (pasó a farma / ya no calza)
@@ -127,4 +128,31 @@ CREATE TABLE IF NOT EXISTS clasificador_f2_corridas (
   creado_en       DATETIME      NOT NULL,
   PRIMARY KEY (id),
   KEY idx_creado (creado_en)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Auditoría con IA de lo que la fase 2 NO rescató (auditoria_ia.py). Una fila por
+-- fila revisada por la IA en un lote. Sólo informa: no cambia ninguna clasificación.
+CREATE TABLE IF NOT EXISTS clasificador_f2_auditoria (
+  id                 BIGINT        NOT NULL AUTO_INCREMENT,
+  lote               VARCHAR(40)   NOT NULL,              -- corrida de auditoría (fecha + lote de la API)
+  tabla_origen       VARCHAR(64)   NOT NULL,
+  fila_id            BIGINT        NOT NULL,
+  grupo              VARCHAR(20)   NOT NULL,              -- cercano | onu_salud | azar
+  motivo_grupo       VARCHAR(160),                        -- por qué se eligió para revisar
+  licitacion         VARCHAR(255),
+  fecha_publicacion  DATETIME,
+  descripcion        VARCHAR(1000),
+  titulo             VARCHAR(300),
+  codigo_onu         VARCHAR(20),
+  nombre_onu         VARCHAR(255),
+  ia_metodo          VARCHAR(60),                         -- cómo la descartó la fase 1
+  clasificador_f1    VARCHAR(80),
+  ia_categoria       VARCHAR(20),                         -- lo que propone la IA, o NINGUNA
+  ia_confianza       VARCHAR(10),                         -- alta | media | baja
+  ia_motivo          VARCHAR(300),
+  modelo             VARCHAR(40),
+  creado_en          DATETIME      NOT NULL,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_lote_fila (lote, tabla_origen, fila_id),
+  KEY idx_lote (lote, ia_categoria)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

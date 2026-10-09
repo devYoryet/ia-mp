@@ -20,7 +20,7 @@ FILA = {
     "fecha_publicacion": datetime(2026, 10, 1, 10, 0), "fecha_cierre": datetime(2026, 10, 20, 15, 0),
     "descripcion": "GUANTE NITRILO <script>alert(1)</script>\x0b CAJA 100", "titulo": "Insumos",
     "codigo_onu": "42132203", "nombre_onu": "Guantes médicos de examen", "ia_interes": 0,
-    "ia_metodo": "descarte_item", "estado_gestor": 0, "clasificador_f1": "Carolina Burgos",
+    "ia_metodo": "descarte_item", "estado_gestor": 0, "clasificador_f1": "Carolina Burgos", "pactivo_f1": None,
     "categoria": "DEV-GUA", "categoria_nombre": "Guantes médicos", "linea": "Device", "subcategoria": "Guante",
     "terminos": "Guante", "senal": "ambas", "estado_auto": "verde", "otras_categorias": None, "vigente": 1,
     "motivo_no_vigente": None, "decision": None, "categoria_final": None, "revisado_por": None,
@@ -157,3 +157,11 @@ def test_next_no_permite_redireccion_externa():
     assert panel._next_seguro("//evil.com") == "/revision"
     assert panel._next_seguro("https://evil.com") == "/revision"
     assert panel._next_seguro("/revision?vista=verde") == "/revision?vista=verde"
+
+
+def test_fila_farma_es_informativa(cli):
+    _login(cli)
+    FILA_FARMA = dict(FILA, estado_auto="farma", pactivo_f1="Aposito", estado_gestor=1, ia_interes=1)
+    import panel as pn
+    html_ = pn._tarjeta(FILA_FARMA, CATS, {c["codigo"]: c for c in CATS}, "/revision")
+    assert "t-farma" in html_ and "Aposito" in html_ and "Aprobar" not in html_

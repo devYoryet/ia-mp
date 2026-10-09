@@ -5,6 +5,7 @@ credenciales de administrador (F2_ADMIN_MYSQL_*). El servicio nunca las usa.
     python admin.py usuario --host 10.0.0.70 --guardar-en ruta/.env
                                                    # crea ia_fase2 con permisos mínimos
     python admin.py semilla                        # carga semilla.py si la config está vacía
+    python admin.py migrar                         # aplica a una BD existente los cambios de schema.sql
     python admin.py verificar                      # con F2_MYSQL_*: prueba que NO puede escribir en tablas ajenas
 
 Permisos del usuario ia_fase2 (lo único que puede hacer):
@@ -44,8 +45,9 @@ def _admin():
 def schema(_a) -> None:
     conn, _db = _admin()
     sql = (AQUI / "schema.sql").read_text(encoding="utf-8")
-    sentencias = [s.strip() for s in "\n".join(
-        l for l in sql.splitlines() if not l.strip().startswith("--")).split(";") if s.strip()]
+    # Sin comentarios de línea (incluidos los que van al final de una columna) antes de cortar por ";".
+    limpio = "\n".join(l.split("--", 1)[0] for l in sql.splitlines())
+    sentencias = [s.strip() for s in limpio.split(";") if s.strip()]
     with conn.cursor() as cur:
         for s in sentencias:
             if not s.upper().startswith("CREATE TABLE IF NOT EXISTS CLASIFICADOR_F2_"):
@@ -88,6 +90,30 @@ def usuario(a) -> None:
             for r in cur.fetchall():
                 print("   ", list(r.values())[0])
     print(f"clave en {destino} (modo 600; no se imprime)")
+
+
+# Columnas agregadas después de crear las tablas: (tabla, columna, definición).
+# MySQL 8 no tiene ADD COLUMN IF NOT EXISTS: se consulta information_schema.
+COLUMNAS_NUEVAS = [
+    ("clasificador_f2_resultado", "pactivo_f1", "VARCHAR(255) NULL AFTER clasificador_f1"),
+]
+
+
+def migrar(_a) -> None:
+    """Idempotente: crea las tablas que falten (schema.sql) y agrega las columnas
+    nuevas a las tablas propias. Sólo toca tablas clasificador_f2_*."""
+    schema(_a)
+    conn, db = _admin()
+    with conn.cursor() as cur:
+        for tabla, col, definicion in COLUMNAS_NUEVAS:
+            assert tabla.startswith("clasificador_f2_")
+            cur.execute("SELECT 1 FROM information_schema.columns WHERE table_schema=%s AND table_name=%s "
+                        "AND column_name=%s", (db, tabla, col))
+            if cur.fetchone():
+                print(f"ya existe {tabla}.{col}")
+                continue
+            cur.execute(f"ALTER TABLE `{tabla}` ADD COLUMN `{col}` {definicion}")
+            print(f"agregada {tabla}.{col}")
 
 
 def semilla(a) -> None:
@@ -184,6 +210,7 @@ def main() -> None:
     s.add_argument("--forzar", action="store_true")
     s.set_defaults(f=semilla)
     sub.add_parser("verificar").set_defaults(f=verificar)
+    sub.add_parser("migrar").set_defaults(f=migrar)
     a = ap.parse_args()
     a.f(a)
 

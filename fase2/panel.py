@@ -40,21 +40,26 @@ SENALES = {
     "solo_palabra": "Sólo palabra",
     "solo_onu": "Sólo código ONU",
     "palabra_debil+onu": "Palabra sin contexto + ONU",
+    "titulo+onu": "Palabra en el título + ONU",
 }
 VISTAS = {
     "revision": ("Revisión", "vigente=1 AND decision IS NULL AND estado_auto='revision'"),
     "verde": ("Verde", "vigente=1 AND decision IS NULL AND estado_auto='verde'"),
+    # Interés farma que además es Device con ambas señales (p. ej. apósitos): ya
+    # se entrega por el canal farma; aquí sólo se muestra para que la vista Device esté completa.
+    "farma": ("En farma", "vigente=1 AND estado_auto='farma'"),
     "revisadas": ("Revisadas", "decision IS NOT NULL"),
     "anuladas": ("Anuladas", "vigente=0"),
 }
 ORDEN = {
     "revision": "(fecha_cierre IS NULL OR fecha_cierre < NOW()), fecha_cierre ASC, id",
     "verde": "(fecha_cierre IS NULL OR fecha_cierre < NOW()), fecha_cierre ASC, id",
+    "farma": "(fecha_cierre IS NULL OR fecha_cierre < NOW()), fecha_cierre ASC, id",
     "revisadas": "revisado_en DESC, id DESC",
     "anuladas": "actualizado_en DESC, id DESC",
 }
 COLUMNAS = ("id, tabla_origen, fila_id, licitacion, fecha_publicacion, fecha_cierre, descripcion, titulo, "
-            "codigo_onu, nombre_onu, ia_interes, ia_metodo, estado_gestor, clasificador_f1, categoria, "
+            "codigo_onu, nombre_onu, ia_interes, ia_metodo, estado_gestor, clasificador_f1, pactivo_f1, categoria, "
             "categoria_nombre, linea, subcategoria, terminos, senal, estado_auto, otras_categorias, vigente, "
             "motivo_no_vigente, decision, categoria_final, revisado_por, revisado_en, motivo, "
             "(fecha_cierre < NOW()) AS cerrada")  # hora del MySQL (Chile): el container está en UTC
@@ -187,6 +192,7 @@ def _conteos(bd: BD, dias: int) -> dict:
     r = bd.uno(
         "SELECT SUM(vigente=1 AND decision IS NULL AND estado_auto='revision') AS revision, "
         "SUM(vigente=1 AND decision IS NULL AND estado_auto='verde') AS verde, "
+        "SUM(vigente=1 AND estado_auto='farma') AS farma, "
         "SUM(decision IS NOT NULL) AS revisadas, SUM(vigente=0) AS anuladas, "
         "SUM(decision IS NOT NULL AND DATE(revisado_en)=CURDATE()) AS hoy "
         "FROM clasificador_f2_resultado WHERE fecha_publicacion >= NOW() - INTERVAL %s DAY", (dias,))
@@ -303,6 +309,7 @@ def resumen(request: Request, dias: int = 30):
         por = bd.todos(
             "SELECT COALESCE(categoria_final, categoria) AS c, "
             "SUM(vigente=1 AND estado_auto='verde') AS verde, SUM(vigente=1 AND estado_auto='revision') AS revision, "
+            "SUM(vigente=1 AND estado_auto='farma') AS farma, "
             "SUM(decision='aprobado') AS aprob, SUM(decision='rechazado') AS rech "
             "FROM clasificador_f2_resultado WHERE fecha_publicacion >= NOW() - INTERVAL %s DAY GROUP BY 1", (dias,))
         prec = bd.todos(
@@ -320,7 +327,8 @@ def resumen(request: Request, dias: int = 30):
     e = html.escape
     filas = "".join(
         f"<tr><td>{e(nom.get(r['c'], r['c']))}</td><td>{int(r['verde'] or 0)}</td><td>{int(r['verde'] or 0) / dias:.1f}</td>"
-        f"<td>{int(r['revision'] or 0)}</td><td>{int(r['aprob'] or 0)}</td><td>{int(r['rech'] or 0)}</td></tr>"
+        f"<td>{int(r['revision'] or 0)}</td><td>{int(r.get('farma') or 0)}</td><td>{int(r['aprob'] or 0)}</td>"
+        f"<td>{int(r['rech'] or 0)}</td></tr>"
         for r in sorted(por, key=lambda r: -int(r["verde"] or 0)))
     tprec = "".join(
         f"<tr><td>{e(nom.get(r['categoria'], r['categoria']))}</td><td>{e(r['estado_auto'])}</td>"
@@ -337,7 +345,7 @@ def resumen(request: Request, dias: int = 30):
 <form class="linea" method="get" action="/resumen"><label>Días</label>
 <input type="number" name="dias" value="{dias}" min="1" max="365"><button>Ver</button></form>
 <h2>Volumen por categoría (últimos {dias} días de publicación)</h2>
-<table><tr><th>Categoría</th><th>Verde</th><th>Verde/día</th><th>Revisión</th><th>Aprobadas</th><th>No aprobadas</th></tr>{filas}</table>
+<table><tr><th>Categoría</th><th>Verde</th><th>Verde/día</th><th>Revisión</th><th>En farma</th><th>Aprobadas</th><th>No aprobadas</th></tr>{filas}</table>
 <p class="meta">{tfu}</p>
 <h2>Precisión medida (lo que el equipo ya revisó)</h2>
 <table><tr><th>Categoría</th><th>Estado auto</th><th>Señal</th><th>Aprob.</th><th>No aprob.</th><th>% aprobación</th></tr>{tprec}</table>
@@ -402,6 +410,8 @@ def _estado_txt(f: dict) -> str:
         return "Aprobada"
     if f["decision"] == "rechazado":
         return "No aprobada"
+    if f["estado_auto"] == "farma":
+        return f"En farma ({f.get('pactivo_f1') or 'sin pactivo'})"
     return "Verde" if f["estado_auto"] == "verde" else "Revisión"
 
 
@@ -429,7 +439,7 @@ def _tarjeta(f: dict, cats: list, nombres: dict, aqui: str) -> str:
     elif f["decision"]:
         clase = "t-aprobada" if f["decision"] == "aprobado" else "t-rechazada"
     else:
-        clase = "t-verde" if f["estado_auto"] == "verde" else "t-revision"
+        clase = {"verde": "t-verde", "farma": "t-farma"}.get(f["estado_auto"], "t-revision")
     cierre = f["fecha_cierre"]
     cerrada = bool(f.get("cerrada"))
     opts = "".join(f'<option value="{e(x["codigo"])}"{" selected" if x["codigo"] == cat_act else ""}>'
@@ -442,10 +452,13 @@ def _tarjeta(f: dict, cats: list, nombres: dict, aqui: str) -> str:
                   f'el {_fmt(f["revisado_en"])}{" · " + e(f["motivo"]) if f["motivo"] else ""}</div>')
     elif not f["vigente"]:
         estado = f'<div class="hu-dec">Anulada: {e(f["motivo_no_vigente"] or "")}</div>'
+    elif f["estado_auto"] == "farma":
+        estado = (f'<div class="hu-dec">Ya es interés en farma, pactivo <b>{e(f.get("pactivo_f1") or "—")}</b>: '
+                  f'se entrega por el canal farma. Aquí es sólo informativa.</div>')
     else:
         estado = ""
     acciones = ""
-    if f["vigente"] and not f["decision"]:
+    if f["vigente"] and not f["decision"] and f["estado_auto"] != "farma":
         acciones = f"""
 <form class="linea decidir" method="post" action="/decidir">
   <input type="hidden" name="id" value="{f['id']}"><input type="hidden" name="next" value="{e(aqui)}">
@@ -602,6 +615,7 @@ button.b-ok { background: #1b6b3a; } button.b-no { background: #a8322a; } button
 .fila-aprob.t-aprobada { border-color: #144a26; background: #d8efe0; }
 .fila-aprob.t-rechazada { border-color: #c0392b; background: #fbe4e1; }
 .fila-aprob.t-anulada { border-color: #95a5b8; background: #eef0f3; }
+.fila-aprob.t-farma { border-color: #2f6fb0; background: #e8f0fa; }
 .fila-aprob .desc-aprob { font-size: 16px; font-weight: 600; line-height: 1.35; margin: 6px 0; word-break: break-word; }
 .fila-aprob .meta-aprob { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; font-size: 13px; }
 .fila-aprob .ap-pub { color: #6b7689; } .fila-aprob .ap-cierre { color: #c0392b; font-weight: 600; }

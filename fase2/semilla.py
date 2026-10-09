@@ -13,7 +13,7 @@ validan con el cliente antes de encenderlos.
 Volúmenes y precisión: docs/06-fase2-device.md.
 """
 
-VERSION_SEMILLA = "v1.1"
+VERSION_SEMILLA = "v1.2"
 
 # Objeto médico para Servicio técnico: el equipo que se mantiene. Se busca en
 # glosa o título.
@@ -130,9 +130,9 @@ CATEGORIAS = [
     {
         "codigo": "DEV-GUA", "linea": "Device", "nombre": "Guantes médicos",
         "prioridad": 4, "onu_solo_a_revision": False, "activa": True,
-        "terminos": [_t("Guante", r"\bguantes?\b", GUANTE_MEDICO)],
+        "terminos": [_t("Guante", r"\bguantes?\b|\bguates?\b", GUANTE_MEDICO)],  # "guates": typo real (3 filas en 30 días)
         "excluye": [
-            _e("guante no médico", r"\b(cabritilla|cabretilla|cuero|carnaza|forro|forrado|anticorte|multiflex|multiuso|multiproposito|mecanic|soldad|motorist|moto\b|arquer|portero|boxeo|futbol|jardin|alta\s+temperatura|termic|dielectric|electricist|aseo|domestic|hilo|lana|tejid|poliester|nylon|activex|invierno|polar|industrial|pvc|cocina|horno|ciclis|bicicleta|golf|equitacion|esqui|buceo|bombero|antivibra|construccion|agricol|pesca|box|seguridad|quimic|alta\s+resistencia|amarillo)\w*"),
+            _e("guante no médico", r"\b(cabritilla|cabretilla|cuero|carnaza|forro|forrado|anticorte|multiflex|multiuso|multiproposito|mecanic|soldad|motorist|moto\b|arquer|portero|boxeo|futbol|jardin|alta\s+temperatura|termic|dielectric|electricist|aseo|domestic|hilo|lana|tejid|poliester|nylon|activex|invierno|polar|industrial|pvc|cocina|horno|ciclis|bicicleta|golf|equitacion|esqui|buceo|bombero|antivibra|construccion|agricol|pesca|de\s+box\b|onzas?\b|onz\b|seguridad|quimic|alta\s+resistencia|amarillo)\w*"),
         ],
         "onu": [
             _o("42132201", "fuerte", "Cajas o dispensadores de guantes médicos"),

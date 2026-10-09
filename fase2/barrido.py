@@ -36,6 +36,11 @@ log = logging.getLogger("fase2.barrido")
 # rompe y un error acá no puede tocar allá. OJO: en Licitaciones_diarias el
 # código está en Cod_Onu; en compra_agil y cotizaciones, en Item.
 FUENTES = {"compra_agil": "Item", "Licitaciones_diarias": "Cod_Onu", "cotizaciones": "Item"}
+# Fuentes cuyo scraper pega el nombre UNSPSC al final de la glosa ("… Guantes
+# quirúrgicos"). Si no se quita, ese nombre hace de "palabra" y las dos señales
+# dejan de ser independientes (medido 2026-10-08: 4 de 9 cotizaciones con sufijo
+# calzaban sólo por él). La glosa original se guarda igual (es la que ve la persona).
+CON_SUFIJO_ONU = {"cotizaciones"}
 LOTE = 2000
 
 SQL_ONU = """
@@ -49,7 +54,7 @@ SQL_RANGO_HI = "SELECT MAX(id) AS hi FROM `{tabla}`"
 SQL_FILAS = """
 SELECT t.id, t.estado_gestor, t.nombre_clasificador, t.`{rub}` AS rub,
        LEFT(t.Descripcion, 1000) AS descripcion, LEFT(t.Titulo, 300) AS titulo,
-       LEFT(t.Licitacion, 255) AS licitacion,
+       LEFT(t.Licitacion, 255) AS licitacion, LEFT(t.pactivo, 255) AS pactivo,
        t.Fecha_Publicacion AS fecha_publicacion, t.Fecha_Cierre AS fecha_cierre
 FROM `{tabla}` t
 WHERE t.id >= %s AND t.id <= %s
@@ -144,7 +149,18 @@ def _info(f: dict, lg: dict | None, onu: dict) -> dict:
         "ia_metodo": metodo[:60] if metodo else None,
         "estado_gestor": f["estado_gestor"],
         "clasificador_f1": nc[:80] if nc else None,
+        "pactivo_f1": f["pactivo"] or None,
     }
+
+
+def glosa_sin_sufijo_onu(descripcion: str | None, nombre_onu: str | None) -> str | None:
+    """Quita el nombre UNSPSC del final de la glosa, si está. Nunca deja la glosa vacía."""
+    if not descripcion or not nombre_onu:
+        return descripcion
+    d = descripcion.rstrip()
+    if len(d) > len(nombre_onu) and d.lower().endswith(nombre_onu.lower()):
+        return d[: -len(nombre_onu)].rstrip()
+    return descripcion
 
 
 def barrer_tabla(bd: BD, cats: list, version: str, onu: dict, tabla: str, lo: int, hi: int,
@@ -167,20 +183,29 @@ def barrer_tabla(bd: BD, cats: list, version: str, onu: dict, tabla: str, lo: in
             if ef is None:
                 st["pendientes"] += 1
                 continue
-            res = None
             if ef == 0:
                 st["descartes"] += 1
-                res = motor.evaluar(cats, f["descripcion"], f["titulo"], f["rub"])
-                if res:
-                    st["calzan"] += 1
-                    st[("cat", res.categoria, res.estado_auto, res.senal)] += 1
-                    st[("tabla", tabla, res.estado_auto)] += 1
-                    if muestras is not None:
-                        muestras[(res.categoria, res.senal)].append(
-                            (tabla, f["id"], (f["descripcion"] or "")[:110], onu.get((f["rub"] or "").strip(), ("?", 0))[0][:40],
-                             ", ".join(res.terminos)))
+            glosa = f["descripcion"]
+            if tabla in CON_SUFIJO_ONU:
+                glosa = glosa_sin_sufijo_onu(glosa, onu.get((f["rub"] or "").strip(), (None, 0))[0])
+            res = motor.evaluar(cats, glosa, f["titulo"], f["rub"])
+            # Interés farma: sólo cuenta si es Device con las DOS señales (si no, una
+            # gota oftálmica, que es farma, aparecería como Device por la palabra).
+            estado_auto = None
+            if ef == 1:
+                res = res if res and res.estado_auto == "verde" else None
+                estado_auto = "farma"
+            if res:
+                st["calzan"] += 1
+                st[("cat", res.categoria, estado_auto or res.estado_auto, res.senal)] += 1
+                st[("tabla", tabla, estado_auto or res.estado_auto)] += 1
+                if muestras is not None:
+                    muestras[(res.categoria, estado_auto or res.senal)].append(
+                        (tabla, f["id"], (f["descripcion"] or "")[:110], onu.get((f["rub"] or "").strip(), ("?", 0))[0][:40],
+                         ", ".join(res.terminos)))
             info = _info(f, lg, onu)
-            accion, cambios = reconciliar(previos.get(f["id"]), ef, campos_auto(res) if res else None, info, version)
+            accion, cambios = reconciliar(previos.get(f["id"]), ef, campos_auto(res, estado_auto) if res else None,
+                                          info, version)
             st[accion] += 1
             if accion == "insertar":
                 sentencias.append((SQL_INS, (tabla, f["id"]) + tuple(cambios[c] for c in COLS_INS[2:])))
