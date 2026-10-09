@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS clasificador_f2_categorias (
   nombre               VARCHAR(120) NOT NULL,
   prioridad            INT          NOT NULL,             -- menor = gana si calzan varias
   onu_solo_a_revision  TINYINT(1)   NOT NULL DEFAULT 0,   -- ONU fuerte sin palabra → revisión
+  titulo_solo_a_revision TINYINT(1) NOT NULL DEFAULT 0,   -- término en el título sin ONU → revisión
   activa               TINYINT(1)   NOT NULL DEFAULT 1,
   creado_por           VARCHAR(80),
   creado_en            DATETIME     NOT NULL,
@@ -30,6 +31,7 @@ CREATE TABLE IF NOT EXISTS clasificador_f2_terminos (
   regex             VARCHAR(2000) NOT NULL,
   contexto_regex    VARCHAR(4000),                       -- sólo 'incluye': contexto exigido (glosa o título)
   orden             INT           NOT NULL DEFAULT 0,    -- del más específico al más genérico
+  salvo_onu_fuerte  TINYINT(1)    NOT NULL DEFAULT 0,    -- sólo 'excluye': no aplica si el ONU es fuerte
   origen            VARCHAR(20)   NOT NULL DEFAULT 'cliente',  -- 'cliente' | 'sugerido'
   activa            TINYINT(1)    NOT NULL DEFAULT 1,
   creado_por        VARCHAR(80),

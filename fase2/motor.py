@@ -46,7 +46,9 @@ FUERZA = {"fuerte": 2, "confirma": 1}
 # Cambia cuando cambia la LÓGICA del motor (no la configuración). Entra en la
 # huella de `version`, así el servicio re-evalúa la ventana tras un deploy.
 #   1 = v1.1 (2026-10-08)  ·  2 = + señal 'titulo+onu'
-MOTOR_VERSION = "2"
+#   3 = + 'titulo' sin ONU (categorías con titulo_solo_a_revision) y exclusiones
+#       que no aplican cuando el ONU es fuerte (salvo_onu_fuerte)
+MOTOR_VERSION = "3"
 _ESPACIOS = re.compile(r"\s+")
 
 
@@ -72,8 +74,9 @@ class Categoria:
     prioridad: int
     onu_solo_a_revision: bool
     terminos: tuple[Termino, ...]
-    excluye: tuple[tuple[str, re.Pattern], ...]
+    excluye: tuple[tuple[str, re.Pattern, bool], ...]  # (nombre, regex, salvo_onu_fuerte)
     onu: tuple[tuple[str, int], ...]  # (prefijo, fuerza) — el prefijo más largo primero
+    titulo_solo_a_revision: bool = False  # término en el título SIN ONU → revisión
 
 
 @dataclass(frozen=True)
@@ -127,7 +130,7 @@ def compilar(categorias: list[dict]) -> tuple[list[Categoria], list[str]]:
                 continue
             rx = _re(e["regex"], f"{cod}/excluye {e['nombre']}")
             if rx is not None:
-                excl.append((e["nombre"], rx))
+                excl.append((e["nombre"], rx, bool(e.get("salvo_onu_fuerte"))))
         onu = []
         for o in c.get("onu", []):
             if not o.get("activa", True):
@@ -138,7 +141,8 @@ def compilar(categorias: list[dict]) -> tuple[list[Categoria], list[str]]:
             onu.append((str(o["codigo"]).strip(), FUERZA[o["fuerza"]]))
         onu.sort(key=lambda x: -len(x[0]))
         out.append(Categoria(cod, c["linea"], c["nombre"], int(c["prioridad"]),
-                             bool(c["onu_solo_a_revision"]), tuple(terms), tuple(excl), tuple(onu)))
+                             bool(c["onu_solo_a_revision"]), tuple(terms), tuple(excl), tuple(onu),
+                             bool(c.get("titulo_solo_a_revision"))))
     out.sort(key=lambda c: c.prioridad)
     for e in errores:
         log.warning(e)
@@ -152,10 +156,22 @@ def _fuerza_onu(cat: Categoria, cod: str) -> tuple[int, str | None]:
     return 0, None
 
 
+def _excluida(cat: Categoria, textos: tuple[str, ...], f: int) -> str | None:
+    """Nombre de la exclusión que calza, o None. Una exclusión `salvo_onu_fuerte`
+    no aplica si el código ONU identifica la categoría (p. ej. "resistente a
+    químicos" en un guante con código de guante quirúrgico)."""
+    for n, rx, salvo in cat.excluye:
+        if salvo and f == FUERZA["fuerte"]:
+            continue
+        if any(rx.search(t) for t in textos):
+            return n
+    return None
+
+
 def _evaluar_categoria(cat: Categoria, glosa: str, titulo: str, cod: str):
-    for _n, rx in cat.excluye:
-        if rx.search(glosa):
-            return None
+    f, pref = _fuerza_onu(cat, cod) if cod else (0, None)
+    if _excluida(cat, (glosa,), f):
+        return None
     fuertes, debiles = [], []
     for t in cat.terminos:
         if not t.regex.search(glosa):
@@ -164,7 +180,6 @@ def _evaluar_categoria(cat: Categoria, glosa: str, titulo: str, cod: str):
             fuertes.append(t.nombre)
         else:
             debiles.append(t.nombre)
-    f, pref = _fuerza_onu(cat, cod) if cod else (0, None)
     if fuertes and f:
         return "verde", "ambas", fuertes, pref
     if fuertes:
@@ -177,17 +192,21 @@ def _evaluar_categoria(cat: Categoria, glosa: str, titulo: str, cod: str):
 
 
 def _evaluar_titulo(cat: Categoria, glosa: str, titulo: str, cod: str):
-    """Término (con su contexto) en el título + ONU de la categoría → revisión."""
-    if not titulo or not cod:
+    """Término (con su contexto) en el título + ONU de la categoría → revisión.
+    Sin ONU, sólo en categorías con titulo_solo_a_revision (medido: en
+    oftalmología, ~la mitad de las líneas bajo un título "insumos oftalmológicos"
+    lo son aunque el código ONU sea genérico)."""
+    if not titulo:
         return None
-    for _n, rx in cat.excluye:
-        if rx.search(glosa) or rx.search(titulo):
-            return None
+    f, pref = _fuerza_onu(cat, cod) if cod else (0, None)
+    if _excluida(cat, (glosa, titulo), f):
+        return None
     terms = [t.nombre for t in cat.terminos if t.regex.search(titulo)
              and (t.contexto is None or t.contexto.search(titulo) or t.contexto.search(glosa))]
-    f, pref = _fuerza_onu(cat, cod)
     if terms and f:
         return "revision", "titulo+onu", terms, pref
+    if terms and cat.titulo_solo_a_revision:
+        return "revision", "titulo", terms, None
     return None
 
 
@@ -222,8 +241,9 @@ def version(categorias: list[dict]) -> str:
         {
             "codigo": c["codigo"], "linea": c["linea"], "nombre": c["nombre"],
             "prioridad": int(c["prioridad"]), "onu_solo": bool(c["onu_solo_a_revision"]),
+            "titulo_solo": bool(c.get("titulo_solo_a_revision")),
             "t": [(t["nombre"], t["regex"], t.get("contexto")) for t in _activos(c.get("terminos", []))],
-            "e": sorted((e["nombre"], e["regex"]) for e in _activos(c.get("excluye", []))),
+            "e": sorted((e["nombre"], e["regex"], bool(e.get("salvo_onu_fuerte"))) for e in _activos(c.get("excluye", []))),
             "o": sorted((str(o["codigo"]), o["fuerza"]) for o in _activos(c.get("onu", []))),
         }
         for c in sorted(_activos(categorias), key=lambda c: c["codigo"])
@@ -247,10 +267,10 @@ def diagnosticar(categorias: list[Categoria], descripcion: str | None, titulo: s
     glosa, tit, cod = normalizar(descripcion), normalizar(titulo), (codigo_onu or "").strip()
     motivos = []
     for cat in categorias:
-        excl = [n for n, rx in cat.excluye if rx.search(glosa)]
+        f, pref = _fuerza_onu(cat, cod) if cod else (0, None)
+        excl = [n for n, rx, salvo in cat.excluye if rx.search(glosa) and not (salvo and f == FUERZA["fuerte"])]
         en_glosa = [t.nombre for t in cat.terminos if t.regex.search(glosa)]
         en_titulo = [t.nombre for t in cat.terminos if t.regex.search(tit)]
-        f, pref = _fuerza_onu(cat, cod) if cod else (0, None)
         if en_glosa and excl:
             motivos.append(f"{cat.codigo} · excluida por '{excl[0]}'")
         elif en_glosa:

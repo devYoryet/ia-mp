@@ -42,6 +42,7 @@ SENALES = {
     "solo_onu": "Sólo código ONU",
     "palabra_debil+onu": "Palabra sin contexto + ONU",
     "titulo+onu": "Palabra en el título + ONU",
+    "titulo": "Palabra en el título (oftalmología)",
 }
 VISTAS = {
     "revision": ("Revisión", "vigente=1 AND decision IS NULL AND estado_auto='revision'"),

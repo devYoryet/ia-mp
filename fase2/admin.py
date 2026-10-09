@@ -96,6 +96,8 @@ def usuario(a) -> None:
 # MySQL 8 no tiene ADD COLUMN IF NOT EXISTS: se consulta information_schema.
 COLUMNAS_NUEVAS = [
     ("clasificador_f2_resultado", "pactivo_f1", "VARCHAR(255) NULL AFTER clasificador_f1"),
+    ("clasificador_f2_categorias", "titulo_solo_a_revision", "TINYINT(1) NOT NULL DEFAULT 0 AFTER onu_solo_a_revision"),
+    ("clasificador_f2_terminos", "salvo_onu_fuerte", "TINYINT(1) NOT NULL DEFAULT 0 AFTER orden"),
 ]
 
 
@@ -121,14 +123,24 @@ def semilla(a) -> None:
     conn, _db = _admin()
     with conn.cursor() as cur:
         cur.execute("SELECT COUNT(*) n FROM clasificador_f2_categorias")
-        if cur.fetchone()["n"] and not a.forzar:
-            raise SystemExit("La configuración ya tiene datos: no se carga la semilla encima (usar --forzar sólo si está vacía de verdad).")
+        hay = cur.fetchone()["n"]
+        if hay and not a.reemplazar:
+            raise SystemExit("La configuración ya tiene datos. Para pasar a esta versión de la semilla: --reemplazar "
+                             "(desactiva términos y códigos actuales, que quedan como historial, y carga los nuevos).")
         quien = f"semilla {s.VERSION_SEMILLA}"
+        if hay:
+            cur.execute("UPDATE clasificador_f2_terminos SET activa=0, actualizado_en=NOW() WHERE activa=1")
+            cur.execute("UPDATE clasificador_f2_onu SET activa=0 WHERE activa=1")
+            print(f"configuración anterior desactivada (historial); cargando {quien}")
         for c in s.CATEGORIAS:
             cur.execute("INSERT INTO clasificador_f2_categorias (codigo, linea, nombre, prioridad, onu_solo_a_revision, "
-                        "activa, creado_por, creado_en, actualizado_en) VALUES (%s,%s,%s,%s,%s,%s,%s,NOW(),NOW())",
+                        "titulo_solo_a_revision, activa, creado_por, creado_en, actualizado_en) "
+                        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,NOW(),NOW()) ON DUPLICATE KEY UPDATE linea=VALUES(linea), "
+                        "nombre=VALUES(nombre), prioridad=VALUES(prioridad), onu_solo_a_revision=VALUES(onu_solo_a_revision), "
+                        "titulo_solo_a_revision=VALUES(titulo_solo_a_revision), activa=VALUES(activa), "
+                        "creado_por=VALUES(creado_por), actualizado_en=NOW()",
                         (c["codigo"], c["linea"], c["nombre"], c["prioridad"], int(c["onu_solo_a_revision"]),
-                         int(c.get("activa", True)), quien))
+                         int(c.get("titulo_solo_a_revision", False)), int(c.get("activa", True)), quien))
             for i, t in enumerate(c["terminos"]):
                 cur.execute("INSERT INTO clasificador_f2_terminos (categoria_codigo, tipo, nombre, regex, contexto_regex, "
                             "orden, origen, activa, creado_por, creado_en, actualizado_en) "
@@ -137,10 +149,10 @@ def semilla(a) -> None:
                              int(t.get("activa", True)), quien))
             for i, e in enumerate(c["excluye"]):
                 cur.execute("INSERT INTO clasificador_f2_terminos (categoria_codigo, tipo, nombre, regex, contexto_regex, "
-                            "orden, origen, activa, creado_por, creado_en, actualizado_en) "
-                            "VALUES (%s,'excluye',%s,%s,NULL,%s,%s,%s,%s,NOW(),NOW())",
-                            (c["codigo"], e["nombre"], e["regex"], i, e.get("origen", "sugerido"),
-                             int(e.get("activa", True)), quien))
+                            "orden, salvo_onu_fuerte, origen, activa, creado_por, creado_en, actualizado_en) "
+                            "VALUES (%s,'excluye',%s,%s,NULL,%s,%s,%s,%s,%s,NOW(),NOW())",
+                            (c["codigo"], e["nombre"], e["regex"], i, int(bool(e.get("salvo_onu_fuerte"))),
+                             e.get("origen", "sugerido"), int(e.get("activa", True)), quien))
             for o in c["onu"]:
                 cur.execute("INSERT INTO clasificador_f2_onu (categoria_codigo, codigo, fuerza, nota, activa, creado_por, "
                             "creado_en) VALUES (%s,%s,%s,%s,%s,%s,NOW())",
@@ -207,7 +219,7 @@ def main() -> None:
     u.add_argument("--rotar", action="store_true", help="si ya existe, asignarle una clave nueva")
     u.set_defaults(f=usuario)
     s = sub.add_parser("semilla")
-    s.add_argument("--forzar", action="store_true")
+    s.add_argument("--reemplazar", action="store_true", help="pasar la config existente a esta versión de la semilla")
     s.set_defaults(f=semilla)
     sub.add_parser("verificar").set_defaults(f=verificar)
     sub.add_parser("migrar").set_defaults(f=migrar)

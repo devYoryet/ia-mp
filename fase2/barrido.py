@@ -83,11 +83,12 @@ SQL_CORRIDA = (
 # --------------------------------------------------------------------------
 def cargar_config(bd: BD) -> list[dict]:
     """Configuración ACTIVA desde las tablas, con la misma forma que semilla.CATEGORIAS."""
-    cats = bd.todos("SELECT codigo, linea, nombre, prioridad, onu_solo_a_revision "
+    cats = bd.todos("SELECT codigo, linea, nombre, prioridad, onu_solo_a_revision, titulo_solo_a_revision "
                     "FROM clasificador_f2_categorias WHERE activa=1")
     por = {c["codigo"]: {**c, "onu_solo_a_revision": bool(c["onu_solo_a_revision"]),
+                         "titulo_solo_a_revision": bool(c["titulo_solo_a_revision"]),
                          "terminos": [], "excluye": [], "onu": []} for c in cats}
-    for t in bd.todos("SELECT categoria_codigo, tipo, nombre, regex, contexto_regex "
+    for t in bd.todos("SELECT categoria_codigo, tipo, nombre, regex, contexto_regex, salvo_onu_fuerte "
                       "FROM clasificador_f2_terminos WHERE activa=1 ORDER BY categoria_codigo, orden, id"):
         c = por.get(t["categoria_codigo"])
         if c is None:
@@ -95,7 +96,7 @@ def cargar_config(bd: BD) -> list[dict]:
         if t["tipo"] == "incluye":
             c["terminos"].append({"nombre": t["nombre"], "regex": t["regex"], "contexto": t["contexto_regex"]})
         elif t["tipo"] == "excluye":
-            c["excluye"].append({"nombre": t["nombre"], "regex": t["regex"]})
+            c["excluye"].append({"nombre": t["nombre"], "regex": t["regex"], "salvo_onu_fuerte": bool(t["salvo_onu_fuerte"])})
     for o in bd.todos("SELECT categoria_codigo, codigo, fuerza FROM clasificador_f2_onu WHERE activa=1"):
         c = por.get(o["categoria_codigo"])
         if c is not None:

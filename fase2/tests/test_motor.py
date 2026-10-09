@@ -39,7 +39,8 @@ def test_normalizar():
     ("ARTROSCOPIA REPARACION MENISCAL, según especificaciones", "42295112", None),
     # Oftalmología
     ("LENTE INTRAOCULAR MONOFOCAL TORICO", "31241501", ("DEV-OFT", "verde", "ambas")),
-    ("CUCHILLETE 15 GRADOS", "42294525", ("DEV-OFT", "revision", "solo_onu")),
+    ("CUCHILLETE 15 GRADOS", "42294525", ("DEV-OFT", "verde", "ambas")),  # v1.3: "cuchillete" es vocabulario oftálmico
+    ("ESPATULA 23 G PARA DELAMINAR MEMBRANAS DE RETINA", "42294525", ("DEV-OFT", "revision", "solo_onu")),
     ("Servicio de catering 15 OCT 2026", "90101603", None),               # OCT = octubre
     ("Equipo OCT para estudio de retina", "", ("DEV-OFT", "revision", "solo_palabra")),
     ("Proyector EPSON 3800 lumenes XGA", "42183015", None),               # código de optotipos mal usado
@@ -74,13 +75,12 @@ def test_servicio_gana_a_producto_y_registra_otras():
 def test_subcategoria_es_el_termino_mas_especifico():
     r = motor.evaluar(CATS, "LENTE INTRAOCULAR para cirugía oftalmológica", "", "422945")
     assert r.subcategoria == "Lentes intraoculares"
-    assert r.terminos == ("Lentes intraoculares", "Oftalmología")
+    assert r.terminos == ("Lentes intraoculares", "Intraocular", "Oftalmología")
 
 
 def test_terminos_inactivos_no_cuentan():
-    # 'Calibración' y los sugeridos de oftalmología vienen inactivos en la semilla.
+    # 'Calibración' sigue inactiva (es adjetivo de producto).
     assert ev("Servicio de calibración de balanza de laboratorio", "") is None
-    assert ev("Tonómetro de aplanación", "") is None
 
 
 def test_regex_invalida_se_saltea_sin_tumbar_el_resto():
@@ -144,3 +144,27 @@ def test_diagnosticar_explica_lo_que_quedo_fuera():
     assert d("Cofias (100 unidades)", "42132205") == ["DEV-GUA · código ONU sin palabra"]
     assert d("GUANTECITOS DE LATEX TALLA S") == ["raíz 'guant' sin calce"]
     assert d("Computador All in One", "43211507") == []
+
+
+
+@pytest.mark.parametrize("desc,cod,titulo,esperado", [
+    # casos reales que la auditoría con IA encontró fuera (lote 20261008-2154)
+    ("MANTENCIÓN CORRECTIVA A EQUIPO DE ULTRASONIDO GE LOGIQ E", "42201703", "", ("SRV-MAN", "verde", "ambas")),
+    ("Mantención correctiva de mesa quirúrgica marca Trumpf", "42191807", "", ("SRV-MAN", "verde", "ambas")),
+    ("Mantención preventiva Microtomo automatico THERMO", "73152101", "MANTENCIÓN EQUIPOS DE ANATOMÍA PATOLÓGICA", ("SRV-MAN", "verde", "ambas")),
+    ("MANTENCION PREVENTIVA COMPRESORES Y BOMBAS DE VACIO", "73152101", "", None),
+    ("Tonómetro de aplanación", "", "", ("DEV-OFT", "revision", "solo_palabra")),
+    ("340-9992 BLEFAROSTATO NEONATAL TERMINO 9MM", "", "", ("DEV-OFT", "revision", "solo_palabra")),
+    ("340-3322 PROTECTOR OCULAR", "", "INSUMOS USO OFTALMOLOGICO CIRUGIA", ("DEV-OFT", "revision", "titulo")),
+    ("Silla De Ruedas Estándar - Incluido Cojín Viscoelástico", "", "", None),
+    ("22510103 - GUANTE QUIRURGICO SIN LATEX ESTERIL, SIN ACELERADOR QUIMICO", "42132205", "", ("DEV-GUA", "verde", "ambas")),
+    ("Guante de nitrilo texturizado de alta resistencia química", "46181504", "", None),
+    ("CAJAS DE GUANNTES DE NITRILO SIN POLVO TALLA XS", "42132203", "", ("DEV-GUA", "verde", "ambas")),
+    ("DETERGENTE ENZIMATICO FORTE 5 LTS PARA LAVADORA MMM", "42281704", "", ("DEV-DET", "verde", "ambas")),
+    ("Espuma multi-enzimática para prelavado de instrumental", "42281704", "", ("DEV-DET", "verde", "ambas")),
+    ("DETERGENTE PH NEUTRO PARA CARPETA DE GIMNASIO", "47131810", "", None),
+    ("ESTEREOMICROSCOPIO TRINOCULAR", "41111709", "", ("DEV-MIC", "verde", "ambas")),
+    ("PARCHE MEDICO CURITA RECTANGULAR ESTERIL CAJA 100", "42311506", "", ("DEV-APO", "verde", "ambas")),
+])
+def test_v13_auditoria(desc, cod, titulo, esperado):
+    assert ev(desc, cod, titulo=titulo) == esperado
