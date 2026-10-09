@@ -229,3 +229,38 @@ def version(categorias: list[dict]) -> str:
         for c in sorted(_activos(categorias), key=lambda c: c["codigo"])
     ]
     return hashlib.sha1(json.dumps(canon, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:16]
+
+
+# --------------------------------------------------------------------------
+# Diagnóstico (sólo auditoría): por qué una fila NO calzó en ninguna categoría
+# --------------------------------------------------------------------------
+# Raíces de las palabras del cliente, para pillar variantes que las regex no cubren.
+RAICES_CLIENTE = re.compile(r"oftal|guant|guat|aposit|deterg|microsc|campim|intraoc|\blio\b|\boct\b"
+                            r"|mantenc|mantenim|manuten|preventiv|correctiv")
+
+
+def diagnosticar(categorias: list[Categoria], descripcion: str | None, titulo: str | None,
+                 codigo_onu: str | None) -> list[str]:
+    """Para una fila que `evaluar` dejó fuera: motivos de 'casi calza', del más
+    al menos concreto. Lista vacía = no se parece a nada de la configuración.
+    No decide nada: alimenta la auditoría de lo no rescatado."""
+    glosa, tit, cod = normalizar(descripcion), normalizar(titulo), (codigo_onu or "").strip()
+    motivos = []
+    for cat in categorias:
+        excl = [n for n, rx in cat.excluye if rx.search(glosa)]
+        en_glosa = [t.nombre for t in cat.terminos if t.regex.search(glosa)]
+        en_titulo = [t.nombre for t in cat.terminos if t.regex.search(tit)]
+        f, pref = _fuerza_onu(cat, cod) if cod else (0, None)
+        if en_glosa and excl:
+            motivos.append(f"{cat.codigo} · excluida por '{excl[0]}'")
+        elif en_glosa:
+            motivos.append(f"{cat.codigo} · '{en_glosa[0]}' sin contexto ni ONU fuerte")
+        elif en_titulo:
+            motivos.append(f"{cat.codigo} · '{en_titulo[0]}' sólo en el título, sin ONU")
+        elif f and pref and len(pref) >= 8 and cat.codigo != "SRV-MAN":
+            motivos.append(f"{cat.codigo} · código ONU sin palabra")
+    if not motivos:
+        m = RAICES_CLIENTE.search(glosa)
+        if m:
+            motivos.append(f"raíz '{m.group(0)}' sin calce")
+    return motivos

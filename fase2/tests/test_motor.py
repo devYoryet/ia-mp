@@ -134,3 +134,13 @@ def test_titulo_mas_onu_va_a_revision_nunca_a_verde():
     assert (r.categoria, r.senal) == ("DEV-MIC", "ambas")
     # exclusiones también miran el título
     assert ev("Talla M", "46181504", titulo="Guantes de cabritilla para bodega") is None
+
+
+def test_diagnosticar_explica_lo_que_quedo_fuera():
+    d = lambda desc, cod="", tit="": motor.diagnosticar(CATS, desc, tit, cod)
+    assert d("GUANTE CABRITILLA C/FORRO", "46181504") == ["DEV-GUA · excluida por 'guante no médico'"]
+    assert d("Mantención preventiva de generador eléctrico") == ["SRV-MAN · excluida por 'vehículo/inmueble'"]
+    assert d("MANTENCION PREVENTIVA BODEGA") == ["SRV-MAN · 'Preventiva' sin contexto ni ONU fuerte"]
+    assert d("Cofias (100 unidades)", "42132205") == ["DEV-GUA · código ONU sin palabra"]
+    assert d("GUANTECITOS DE LATEX TALLA S") == ["raíz 'guant' sin calce"]
+    assert d("Computador All in One", "43211507") == []

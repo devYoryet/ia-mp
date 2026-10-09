@@ -10,8 +10,9 @@ Login: el mismo padrón del equipo (tabla `users` del legacy, bcrypt de
 Laravel), con cookie propia (F2_SESSION_SECRET).
 
 Vistas: /revision (una señal → aprobar / no aprobar), verde (ambas señales,
-corregibles), revisadas, anuladas; /resumen (volumen, precisión medida y salud
-del barrido); /exportar.xlsx (lo filtrado, para el cliente).
+corregibles), en farma, revisadas, anuladas; /resumen (volumen, precisión medida
+y salud del barrido); /exportar.xlsx (lo filtrado, para el cliente);
+/auditoria (lo que la fase 2 NO rescató, revisado por IA: auditoria_ia.py).
 """
 
 from __future__ import annotations
@@ -355,6 +356,131 @@ def resumen(request: Request, dias: int = 30):
     return _layout(request, "Resumen", cuerpo, corrida)
 
 
+@app.get("/auditoria", response_class=HTMLResponse)
+def auditoria(request: Request, lote: str = "", cat: str = "", confianza: str = "", grupo: str = "", p: int = 1):
+    """Lo que la fase 2 NO rescató, revisado por IA (sólo lectura)."""
+    p = max(1, p)
+
+    def _q(bd):
+        lotes = bd.todos("SELECT lote, dias, modelo, rescatadas, sin_rescatar, revisadas, costo_usd, resumen_json, creado_en "
+                         "FROM clasificador_f2_auditoria_lotes ORDER BY creado_en DESC LIMIT 20")
+        if not lotes:
+            return lotes, None, [], 0, _ultima_corrida(bd), _categorias(bd)
+        actual = next((x for x in lotes if x["lote"] == lote), lotes[0])
+        where, params = ["lote=%s", "ia_categoria IS NOT NULL", "ia_categoria <> 'NINGUNA'"], [actual["lote"]]
+        if cat:
+            where.append("ia_categoria=%s"); params.append(cat)
+        if confianza in ("alta", "media", "baja"):
+            where.append("ia_confianza=%s"); params.append(confianza)
+        if grupo in ("cercano", "onu_salud", "resto"):
+            where.append("grupo=%s"); params.append(grupo)
+        w = " AND ".join(where)
+        filas = bd.todos(f"SELECT * FROM clasificador_f2_auditoria WHERE {w} "
+                         f"ORDER BY FIELD(ia_confianza,'alta','media','baja'), motivo_grupo, id LIMIT %s OFFSET %s",
+                         tuple(params) + (POR_PAGINA, (p - 1) * POR_PAGINA))
+        total = bd.uno(f"SELECT COUNT(*) AS n FROM clasificador_f2_auditoria WHERE {w}", tuple(params))["n"]
+        return lotes, actual, filas, int(total), _ultima_corrida(bd), _categorias(bd)
+
+    lotes, actual, filas, total, corrida, cats = _con_bd(_q)
+    e = html.escape
+    if not actual:
+        return _layout(request, "Auditoría IA", '<p class="vacio">Todavía no hay auditorías. Se corren con '
+                       '<code>auditoria_ia.py</code>.</p>', corrida)
+    import json as _json
+    res = _json.loads(actual["resumen_json"] or "[]")
+    est_total = sum(r["estimado"] for r in res)
+    nom = {c["codigo"]: f'{c["linea"]} · {c["nombre"]}' for c in cats}
+    cab = (f'<p class="meta">Lote <b>{e(actual["lote"])}</b> · últimos {actual["dias"]} días · modelo {e(actual["modelo"])} · '
+           f'costo US$ {float(actual["costo_usd"]):.2f} · rescatadas por la fase 2: {actual["rescatadas"]} · '
+           f'sin rescatar: {actual["sin_rescatar"]} · revisadas por IA (muestra): {actual["revisadas"]}</p>'
+           f'<p class="meta">La IA revisa una <b>muestra</b> de cada estrato. <b>Estimado</b> = población × tasa de '
+           f'"sí" (confianza alta o media) en la muestra: es una estimación, no un conteo. Estimado total de '
+           f'faltantes en la ventana: <b>{est_total}</b>.</p>')
+    tres = "".join(
+        f"<tr><td>{e(r['estrato'])}</td><td>{r['poblacion']}</td><td>{r['revisadas']}</td><td>{r['si']}</td>"
+        f"<td>{r['si_baja']}</td><td>{100 * r['tasa']:.1f}%</td><td><b>{r['estimado']}</b></td></tr>"
+        for r in sorted(res, key=lambda r: (-r["estimado"], -r["poblacion"])))
+    opts_lote = "".join(f'<option value="{e(x["lote"])}"{" selected" if x["lote"] == actual["lote"] else ""}>'
+                        f'{e(x["lote"])}</option>' for x in lotes)
+    opts_cat = '<option value="">Todas las categorías</option>' + "".join(
+        f'<option value="{e(c["codigo"])}"{" selected" if c["codigo"] == cat else ""}>{e(nom[c["codigo"]])}</option>' for c in cats)
+    opts_conf = "".join(f'<option value="{v}"{" selected" if v == confianza else ""}>{t}</option>'
+                        for v, t in (("", "Toda confianza"), ("alta", "Alta"), ("media", "Media"), ("baja", "Baja")))
+    opts_gr = "".join(f'<option value="{v}"{" selected" if v == grupo else ""}>{t}</option>'
+                      for v, t in (("", "Todos los grupos"), ("cercano", "Casi calzan"), ("onu_salud", "ONU de salud"),
+                                   ("resto", "Resto")))
+    tarjetas = []
+    for f in filas:
+        clase = {"alta": "t-rechazada", "media": "t-revision"}.get(f["ia_confianza"], "t-anulada")
+        tarjetas.append(f"""
+<div class="fila-aprob {clase}">
+  <div class="meta-aprob"><span class="badge b-cat">IA: {e(nom.get(f['ia_categoria'], f['ia_categoria'] or ''))}</span>
+    <span class="badge b-sen">confianza {e(f['ia_confianza'] or '')}</span>
+    <span class="ap-lic">{e(FUENTES.get(f['tabla_origen'], f['tabla_origen']))} <b>{e(f['licitacion'] or '')}</b></span>
+    <span class="ap-pub">publicada {_fmt(f['fecha_publicacion'])}</span></div>
+  <div class="desc-aprob">{e(f['descripcion'] or '')}</div>
+  {f'<div class="ap-titulo"><span class="ap-tag">Título</span>{e(f["titulo"])}</div>' if f['titulo'] else ''}
+  <div class="meta">ONU {e(f['codigo_onu'] or '—')} {e(f['nombre_onu'] or '')} · fase 1: {e(f['ia_metodo'] or f['clasificador_f1'] or '?')}</div>
+  <div class="meta">Por qué quedó fuera: <b>{e(f['motivo_grupo'] or '')}</b></div>
+  <div class="hu-dec">IA: {e(f['ia_motivo'] or '')}</div>
+</div>""")
+    paginas = max(1, -(-total // POR_PAGINA))
+    q = {"lote": actual["lote"], "cat": cat, "confianza": confianza, "grupo": grupo}
+    pag = " ".join(f'<a class="{"on" if n == p else ""}" href="/auditoria?{e(urlencode({**q, "p": n}))}">{n}</a>'
+                   for n in sorted({1, max(1, p - 1), p, min(paginas, p + 1), paginas})) if paginas > 1 else ""
+    cuerpo = f"""{cab}
+<h2>Resumen por estrato (por qué quedó fuera)</h2>
+<table><tr><th>Estrato</th><th>Población</th><th>Revisadas</th><th>IA sí (alta/media)</th><th>IA sí (baja)</th><th>Tasa</th><th>Estimado</th></tr>{tres}</table>
+<h2>Posibles faltantes según la IA ({total})</h2>
+<form class="linea filtros" method="get" action="/auditoria"><select name="lote">{opts_lote}</select>
+<select name="cat">{opts_cat}</select><select name="confianza">{opts_conf}</select><select name="grupo">{opts_gr}</select>
+<button>Filtrar</button> <a href="/auditoria.xlsx?{e(urlencode(q))}">Exportar a Excel</a></form>
+{''.join(tarjetas) or '<p class="vacio">Sin posibles faltantes con estos filtros.</p>'}
+<div class="paginas">{pag}</div>"""
+    return _layout(request, "Auditoría IA de lo no rescatado", cuerpo, corrida)
+
+
+@app.get("/auditoria.xlsx")
+def auditoria_xlsx(lote: str = "", cat: str = "", confianza: str = "", grupo: str = ""):
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+
+    def _q(bd):
+        l = bd.uno("SELECT lote FROM clasificador_f2_auditoria_lotes WHERE lote=%s", (lote,)) if lote else None
+        l = l or bd.uno("SELECT lote FROM clasificador_f2_auditoria_lotes ORDER BY creado_en DESC LIMIT 1")
+        if not l:
+            return None, []
+        where, params = ["lote=%s"], [l["lote"]]
+        if cat:
+            where.append("ia_categoria=%s"); params.append(cat)
+        if confianza in ("alta", "media", "baja"):
+            where.append("ia_confianza=%s"); params.append(confianza)
+        if grupo in ("cercano", "onu_salud", "resto"):
+            where.append("grupo=%s"); params.append(grupo)
+        return l["lote"], bd.todos(f"SELECT * FROM clasificador_f2_auditoria WHERE {' AND '.join(where)} "
+                                   f"ORDER BY ia_categoria='NINGUNA', FIELD(ia_confianza,'alta','media','baja'), id LIMIT %s",
+                                   tuple(params) + (MAX_EXPORT,))
+
+    l, filas = _con_bd(_q)
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Auditoría"
+    ws.append(["Categoría IA", "Confianza", "Motivo IA", "Por qué quedó fuera", "Grupo", "Fuente", "Licitación / código",
+               "Publicación", "Glosa", "Título", "Código ONU", "Nombre ONU", "Fase 1", "Clasificó fase 1"])
+    for c in ws[1]:
+        c.font = Font(bold=True)
+    for f in filas:
+        ws.append([_xl(v) for v in [f["ia_categoria"], f["ia_confianza"], f["ia_motivo"], f["motivo_grupo"], f["grupo"],
+                                    FUENTES.get(f["tabla_origen"], f["tabla_origen"]), f["licitacion"], f["fecha_publicacion"],
+                                    f["descripcion"], f["titulo"], f["codigo_onu"], f["nombre_onu"], f["ia_metodo"],
+                                    f["clasificador_f1"]]])
+    ws.freeze_panes = "A2"
+    buf = io.BytesIO()
+    wb.save(buf)
+    return Response(buf.getvalue(), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": f'attachment; filename="auditoria_{l or "sin_lote"}.xlsx"'})
+
+
 @app.get("/exportar.xlsx")
 def exportar(vista: str = "verde", cat: str = "", fuente: str = "", senal: str = "", dias: int = 60, q: str = ""):
     from openpyxl import Workbook
@@ -550,7 +676,7 @@ def _layout(request: Request, titulo: str, cuerpo: str, corrida: dict | None) ->
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Fase 2 · {html.escape(titulo)}</title><style>{CSS}</style></head><body>
 <header><b>Fase 2 · Device / Servicio técnico</b>
-<nav><a href="/revision">Revisión</a><a href="/resumen">Resumen</a>{_salud_html(corrida)}
+<nav><a href="/revision">Revisión</a><a href="/resumen">Resumen</a><a href="/auditoria">Auditoría IA</a>{_salud_html(corrida)}
 <span class="usuario"><span class="avatar">{inicial}</span>{nombre}<a href="/logout">salir</a></span></nav></header>
 <main><h1>{html.escape(titulo)}</h1>{cuerpo}</main>
 <script>{JS}</script></body></html>"""

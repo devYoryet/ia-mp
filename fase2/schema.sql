@@ -156,3 +156,17 @@ CREATE TABLE IF NOT EXISTS clasificador_f2_auditoria (
   UNIQUE KEY uq_lote_fila (lote, tabla_origen, fila_id),
   KEY idx_lote (lote, ia_categoria)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Un registro por lote de auditoría: población por estrato, estimado de faltantes y costo.
+CREATE TABLE IF NOT EXISTS clasificador_f2_auditoria_lotes (
+  lote           VARCHAR(40)    NOT NULL,
+  dias           INT            NOT NULL,
+  modelo         VARCHAR(40)    NOT NULL,
+  rescatadas     INT            NOT NULL,                -- lo que la fase 2 sí rescató en la ventana
+  sin_rescatar   INT            NOT NULL,                -- descartes que quedaron fuera (población auditada)
+  revisadas      INT            NOT NULL,                -- muestra revisada por la IA
+  costo_usd      DECIMAL(10,4)  NOT NULL,
+  resumen_json   MEDIUMTEXT     NOT NULL,                -- [{estrato, poblacion, revisadas, si, si_baja, tasa, estimado}]
+  creado_en      DATETIME       NOT NULL,
+  PRIMARY KEY (lote)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

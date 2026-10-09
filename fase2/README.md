@@ -31,6 +31,7 @@ Si calzan las dos señales, la fila queda en **verde**. Si calza una sola, va a
 | `barrido.py` | lee las fuentes por bloques de PK y escribe sólo en `clasificador_f2_*` |
 | `servicio.py` | loop: barrido rápido (3 días) cada 10 minutos, profundo (60 días) a diario y cuando cambian las reglas |
 | `panel.py` | panel de revisión en http://10.0.0.70:8810 (red interna / VPN), con el login del equipo. Sólo escribe las columnas de revisión humana |
+| `auditoria_ia.py` | auditoría con IA de lo que la fase 2 NO rescató: muestra por estrato (casi calzan, ONU de salud, resto), revisión por lote con tope de gasto, estimado de faltantes. Gasta API: la corre una persona |
 | `backtest_fase2.py` | mide sin escribir: volumen por categoría y señal, y precisión de lo revisado |
 | `admin.py` | tareas de una persona con credenciales de administrador: tablas, usuario, semilla, verificación |
 
@@ -46,6 +47,9 @@ cd /opt/ia-mp-fase2/fase2 && ./desplegar.sh
 
 # apagar (no afecta al clasificador)
 cd /opt/ia-mp-fase2/fase2 && docker compose down
+
+# auditoría con IA de lo NO rescatado (gasta API: tope en US$; registra el costo en clasificador_ia_costos)
+python auditoria_ia.py --dias 30 --tope-usd 10 --excel auditoria.xlsx   # vista: http://10.0.0.70:8810/auditoria
 
 # bitácora de corridas
 SELECT * FROM clasificador_f2_corridas ORDER BY id DESC LIMIT 10;
