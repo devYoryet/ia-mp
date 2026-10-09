@@ -29,7 +29,17 @@
 > - **Auditoría con IA de lo no rescatado:** `fase2/auditoria_ia.py` y la vista `/auditoria`.
 >   Muestra por estrato revisada por Claude en lote, con tope de gasto y estimado de faltantes.
 >
-> Los números salen de datos reales medidos a $0, sin llamar a la API. Donde dice
+> - **Primera auditoría (lote `20261008-2154-sPDzFN`, 30 días):**
+>   - 5.739 filas revisadas por `claude-opus-5-5` en lote, por US$ 4,63;
+>   - estimado de **~958 faltantes** (~32/día), sobre todo mantención de equipos que no estaban en el
+>     vocabulario e insumos oftalmológicos;
+>   - el resto al azar (203 mil filas) dio 0 de 1.000.
+> - **v1.3**, vocabulario corregido con esos casos. Medido contra las etiquetas de la IA ($0):
+>   - recupera 173/250 "sí" (69 %) y cuela 62/5.468 (1,1 %);
+>   - estimado: ~630 de los ~958 recuperados, con precisión ~92 % en verde y ~66 % en revisión;
+>   - backtest de 30 días: verde 64,7→77,3/día y revisión 36,0→44,7/día.
+>
+> Los números salen de datos reales medidos a $0, sin llamar a la API (salvo la auditoría, que se indica). Donde dice
 > *inferido* es una estimación sobre muestras revisadas a mano, no una medición.
 
 ## Para qué
