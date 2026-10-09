@@ -17,6 +17,18 @@
 >   (precisión medida y salud del barrido). Publicarlo en el dominio requiere una location en nginx
 >   (no se hizo).
 >
+> - **Ajustes v1.2 (2026-10-08, cada uno medido en seco a 30 días):**
+>   - cotizaciones: se quita el sufijo UNSPSC antes de buscar la palabra (verde 20→10, revisión 0→8);
+>   - guantes: typo "guates" y la exclusión "box" ya no bloquea "PRESENTACIÓN BOX" (+5 verde);
+>   - señal `titulo+onu`: +128 a revisión, nunca a verde;
+>   - canal **En farma** (interés farma que además es Device con ambas señales, sobre todo apósitos):
+>     +920 informativas, sin revisión.
+>
+>   La regla "según adjunto + ONU" en guantes se descartó: medida, acertaba ~3 de 23.
+>   Estado a 60 días: 4.321 verde, 2.334 revisión, 1.932 en farma.
+> - **Auditoría con IA de lo no rescatado:** `fase2/auditoria_ia.py` y la vista `/auditoria`.
+>   Muestra por estrato revisada por Claude en lote, con tope de gasto y estimado de faltantes.
+>
 > Los números salen de datos reales medidos a $0, sin llamar a la API. Donde dice
 > *inferido* es una estimación sobre muestras revisadas a mano, no una medición.
 
