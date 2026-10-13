@@ -204,7 +204,7 @@ def _conteos(bd: BD, dias: int) -> dict:
 
 def _ultima_corrida(bd: BD) -> dict | None:
     return bd.uno("SELECT tipo, creado_en, segundos, error, TIMESTAMPDIFF(MINUTE, creado_en, NOW()) AS hace "
-                  "FROM clasificador_f2_corridas ORDER BY id DESC LIMIT 1")
+                  "FROM clasificador_f2_corridas WHERE tipo <> 'entrega' ORDER BY id DESC LIMIT 1")
 
 
 # --------------------------------------------------------------------------

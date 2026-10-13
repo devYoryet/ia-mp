@@ -33,7 +33,8 @@ ONU_CADA = 24 * 3600
 
 def motivo_profundo(bd: BD, version: str) -> str | None:
     ahora = bd.uno("SELECT CURDATE() AS hoy, HOUR(NOW()) AS hora")
-    ultima = bd.uno("SELECT version_reglas FROM clasificador_f2_corridas WHERE error IS NULL ORDER BY id DESC LIMIT 1")
+    ultima = bd.uno("SELECT version_reglas FROM clasificador_f2_corridas WHERE error IS NULL AND tipo <> 'entrega' "
+                    "ORDER BY id DESC LIMIT 1")
     if ultima and ultima["version_reglas"] != version:
         return "cambiaron las reglas"
     p = bd.uno("SELECT MAX(creado_en) AS m FROM clasificador_f2_corridas WHERE tipo='profundo' AND error IS NULL")

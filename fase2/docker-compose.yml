@@ -4,6 +4,7 @@
 # auto-deploy de main no lo toca. Dos containers de la misma imagen:
 #   fase2  → servicio.py: barrido rápido cada 10 min y profundo diario
 #   panel  → panel.py:    revisión (aprobar / no aprobar), puerto 8810
+#   entrega → entrega.py: match del gestor 2 (copia lo asignado a las tablas por cliente; .env.entrega)
 # Se despliega a mano en gestor_oc:
 #     cd /opt/ia-mp-fase2/fase2 && ./desplegar.sh
 # Apagarlo no afecta a nada:   docker compose down
@@ -43,4 +44,16 @@ services:
     restart: unless-stopped
     mem_limit: 384m
     cpus: "0.5"
+    logging: *log
+
+  entrega:
+    build: .
+    image: clasificador-f2:latest
+    container_name: ia-mp-fase2-entrega
+    command: python entrega.py
+    # Usuario ia_f2_entrega (clásico + prime). F2E_ACTIVA=0 = en seco. Apagarlo no afecta nada.
+    env_file: .env.entrega
+    restart: unless-stopped
+    mem_limit: 256m
+    cpus: "0.25"
     logging: *log

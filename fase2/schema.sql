@@ -188,3 +188,30 @@ CREATE TABLE IF NOT EXISTS clasificador_f2_pactivo_categoria (
   PRIMARY KEY (id),
   KEY idx_activa (activa, pactivo)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Entrega a clientes (entrega.py, el "match del gestor 2"): libro de lo que la fase 2 copió a las
+-- tablas por cliente (licitaciones_diarias_intranet.Licitaciones_diarias_clientes[_agil|_cotizaciones],
+-- clásico y prime). Las filas copiadas son IDÉNTICAS a las del legacy (sin marca en tablas ajenas):
+-- este libro es lo único que dice cuáles son de la fase 2. Idempotencia, auditoría y reversión.
+CREATE TABLE IF NOT EXISTS clasificador_f2_entregas (
+  id              BIGINT        NOT NULL AUTO_INCREMENT,
+  tabla_origen    VARCHAR(64)   NOT NULL,
+  fila_id         BIGINT        NOT NULL,
+  rut_cliente     VARCHAR(20)   NOT NULL,
+  unidad_id       INT           NOT NULL,
+  negocio         VARCHAR(255)  NOT NULL,                -- nombre de la unidad (Device / Servicio Técnico)
+  destino         VARCHAR(64)   NOT NULL,                -- tabla por cliente
+  licitacion      VARCHAR(255)  NOT NULL,
+  item            VARCHAR(20)   NOT NULL,
+  cod_onu         VARCHAR(255),
+  categoria       VARCHAR(20)   NOT NULL,
+  estado          VARCHAR(20)   NOT NULL,                -- entregada | ya_existia | retirada | retenida
+  en_clasico      TINYINT(1)    NOT NULL DEFAULT 0,
+  en_prime        TINYINT(1)    NOT NULL DEFAULT 0,
+  motivo          VARCHAR(160),
+  entregado_en    DATETIME      NOT NULL,
+  actualizado_en  DATETIME      NOT NULL,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_fila_cliente (tabla_origen, fila_id, rut_cliente),
+  KEY idx_estado (estado, rut_cliente)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
