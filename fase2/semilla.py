@@ -219,3 +219,19 @@ CATEGORIAS = [
         ],
     },
 ]
+
+
+# Segunda categoría interna de pactivos de FARMA (tabla clasificador_f2_pactivo_categoria).
+# Sólo lo inequívoco; los ambiguos quedan fuera hasta que negocio decida (ver docs/06):
+# Venda Elastica, Espuma (apósito de espuma Y espuma enzimática), Hidrogel, Cinta/Tela adhesiva,
+# Carboximetilcelulosa (también es colirio), Fluoresceina, Hialuronato-Condroitin, Riboflavina.
+PACTIVO_CATEGORIA = [
+    {"pactivo": "aposito", "categoria_codigo": "DEV-APO", "nota": "1.920 filas farma en 60 días"},
+    {"pactivo": "Aposito Abdominal VAC", "categoria_codigo": "DEV-APO", "nota": "catálogo farma"},
+    {"pactivo": "Aposito para Heridas", "categoria_codigo": "DEV-APO", "nota": "catálogo farma"},
+    {"pactivo": "Aposito Silicona", "categoria_codigo": "DEV-APO", "nota": "catálogo farma"},
+    {"pactivo": "Lamina No Adherente Tegaderm", "categoria_codigo": "DEV-APO", "nota": "apósito de contacto"},
+    {"pactivo": "Caja Cataratas", "categoria_codigo": "DEV-OFT", "nota": "diccionario Device de Megalabs"},
+    {"pactivo": "Caja de lentes", "categoria_codigo": "DEV-OFT", "nota": "diccionario Device de Megalabs"},
+    {"pactivo": "Detergente Enzimatico", "categoria_codigo": "DEV-DET", "nota": "diccionario Device de Megalabs"},
+]

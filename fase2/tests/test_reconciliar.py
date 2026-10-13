@@ -79,3 +79,27 @@ def test_info_cambia_sin_tocar_lo_automatico():
 def test_reactiva_si_vuelve_a_descarte():
     acc, c = reconciliar(previo(vigente=0, motivo_no_vigente=MOTIVO_FARMA), 0, AUTO, INFO, "v")
     assert acc == "reactivar" and c["vigente"] == 1 and c["motivo_no_vigente"] is None
+
+
+def test_segunda_categoria_de_pactivo_farma():
+    import motor, semilla
+    from barrido import resultado_farma
+    cats, _ = motor.compilar(semilla.CATEGORIAS)
+    por = {c.codigo: c for c in cats}
+    mapa = {motor.normalizar(p["pactivo"]): p["categoria_codigo"] for p in semilla.PACTIVO_CATEGORIA}
+    # pactivo mapeado: entra aunque la glosa no diga "apósito"
+    r = resultado_farma(None, "Aposito", mapa, por)
+    assert (r.categoria, r.senal, r.terminos) == ("DEV-APO", "pactivo_farma", ("Aposito",))
+    # pactivo no mapeado: sólo con ambas señales
+    verde = Resultado("DEV-DET", "Device", "Detergentes clínicos", "verde", "ambas", ("Detergente",), "42281704")
+    rev = Resultado("DEV-OFT", "Device", "Oftalmología", "revision", "solo_palabra", ("Oftalmología",), None)
+    assert resultado_farma(verde, "Espuma", mapa, por) is verde
+    assert resultado_farma(rev, "Timolol", mapa, por) is None   # un colirio no es Device
+    assert resultado_farma(None, None, mapa, por) is None
+
+
+def test_la_huella_cambia_con_los_pactivos():
+    import motor, semilla
+    a = motor.version(semilla.CATEGORIAS, semilla.PACTIVO_CATEGORIA)
+    assert a != motor.version(semilla.CATEGORIAS)
+    assert a == motor.version(semilla.CATEGORIAS, list(reversed(semilla.PACTIVO_CATEGORIA)))

@@ -6,6 +6,7 @@ credenciales de administrador (F2_ADMIN_MYSQL_*). El servicio nunca las usa.
                                                    # crea ia_fase2 con permisos mínimos
     python admin.py semilla                        # carga semilla.py si la config está vacía
     python admin.py migrar                         # aplica a una BD existente los cambios de schema.sql
+    python admin.py pactivos                       # carga la segunda categoría de pactivos farma de semilla.py (las que falten)
     python admin.py verificar                      # con F2_MYSQL_*: prueba que NO puede escribir en tablas ajenas
 
 Permisos del usuario ia_fase2 (lo único que puede hacer):
@@ -160,6 +161,25 @@ def semilla(a) -> None:
             print("ok:", c["codigo"])
 
 
+def pactivos(_a) -> None:
+    """Agrega las filas de semilla.PACTIVO_CATEGORIA que falten (no toca las existentes)."""
+    import semilla as s
+    import motor
+    conn, _db = _admin()
+    with conn.cursor() as cur:
+        cur.execute("SELECT pactivo, categoria_codigo FROM clasificador_f2_pactivo_categoria")
+        hay = {(motor.normalizar(r["pactivo"]), r["categoria_codigo"]) for r in cur.fetchall()}
+        n = 0
+        for p in s.PACTIVO_CATEGORIA:
+            if (motor.normalizar(p["pactivo"]), p["categoria_codigo"]) in hay:
+                continue
+            cur.execute("INSERT INTO clasificador_f2_pactivo_categoria (pactivo, categoria_codigo, nota, activa, creado_por, "
+                        "creado_en) VALUES (%s,%s,%s,1,%s,NOW())",
+                        (p["pactivo"], p["categoria_codigo"], p.get("nota"), f"semilla {s.VERSION_SEMILLA}"))
+            n += 1
+    print(f"pactivos con segunda categoría: {n} nuevos, {len(hay)} ya estaban")
+
+
 def verificar(_a) -> None:
     """Prueba los tres candados con el usuario de la fase 2. Las sentencias de
     prueba son no-ops (id=-1, WHERE 1=0, IF NOT EXISTS sobre una tabla que ya
@@ -223,6 +243,7 @@ def main() -> None:
     s.set_defaults(f=semilla)
     sub.add_parser("verificar").set_defaults(f=verificar)
     sub.add_parser("migrar").set_defaults(f=migrar)
+    sub.add_parser("pactivos").set_defaults(f=pactivos)
     a = ap.parse_args()
     a.f(a)
 

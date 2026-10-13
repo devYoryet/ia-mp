@@ -65,12 +65,12 @@ def main() -> None:
         return
     if a.semilla:
         import semilla
-        config = semilla.CATEGORIAS
+        config, pactivos = semilla.CATEGORIAS, semilla.PACTIVO_CATEGORIA
     else:
-        config = barrido.cargar_config(bd)
+        config, pactivos = barrido.cargar_config(bd), None
     muestras = defaultdict(list) if a.muestra else None
     st = barrido.correr(bd, "backtest", a.dias, barrido.cargar_onu(bd), config,
-                        escribir=False, leer_previos=False, muestras=muestras)
+                        escribir=False, leer_previos=False, muestras=muestras, pactivos=pactivos)
     _tabla_resultados(st, a.dias)
     if muestras:
         rnd = random.Random(7)

@@ -104,6 +104,22 @@ def cargar_config(bd: BD) -> list[dict]:
     return list(por.values())
 
 
+def cargar_pactivos(bd: BD) -> list[dict]:
+    """Segunda categoría interna de pactivos farma (activos)."""
+    return bd.todos("SELECT pactivo, categoria_codigo FROM clasificador_f2_pactivo_categoria WHERE activa=1")
+
+
+def resultado_farma(res, pactivo: str | None, mapa: dict, cats_por_codigo: dict):
+    """Para una fila de INTERÉS farma: si su pactivo tiene segunda categoría, entra a
+    esa categoría (señal 'pactivo_farma') aunque la glosa no diga la palabra; si no,
+    sólo si la evalúa Device con ambas señales. Devuelve el Resultado o None."""
+    cod = mapa.get(motor.normalizar(pactivo)) if pactivo else None
+    if cod and cod in cats_por_codigo:
+        c = cats_por_codigo[cod]
+        return motor.Resultado(c.codigo, c.linea, c.nombre, "verde", "pactivo_farma", (pactivo,), None)
+    return res if res and res.estado_auto == "verde" else None
+
+
 def cargar_onu(bd: BD) -> dict[str, tuple[str, int]]:
     """{código: (nombre UNSPSC dominante, n)} desde Licitaciones_diarias.Producto_Servicio.
     Medido 2026-10-08: 12.948 códigos, un solo nombre por código salvo 2."""
@@ -165,8 +181,11 @@ def glosa_sin_sufijo_onu(descripcion: str | None, nombre_onu: str | None) -> str
 
 
 def barrer_tabla(bd: BD, cats: list, version: str, onu: dict, tabla: str, lo: int, hi: int,
-                 st: Counter, escribir: bool = True, leer_previos: bool = True, muestras=None) -> None:
+                 st: Counter, escribir: bool = True, leer_previos: bool = True, muestras=None,
+                 mapa: dict | None = None) -> None:
     rub = FUENTES[tabla]
+    mapa = mapa or {}
+    cats_por_codigo = {c.codigo: c for c in cats}
     sql_filas = SQL_FILAS.format(tabla=tabla, rub=rub)
     desde = lo
     while desde <= hi:
@@ -194,7 +213,7 @@ def barrer_tabla(bd: BD, cats: list, version: str, onu: dict, tabla: str, lo: in
             # gota oftálmica, que es farma, aparecería como Device por la palabra).
             estado_auto = None
             if ef == 1:
-                res = res if res and res.estado_auto == "verde" else None
+                res = resultado_farma(res, f["pactivo"], mapa, cats_por_codigo)
                 estado_auto = "farma"
             if res:
                 st["calzan"] += 1
@@ -226,15 +245,19 @@ def barrer_tabla(bd: BD, cats: list, version: str, onu: dict, tabla: str, lo: in
 
 
 def correr(bd: BD, tipo: str, dias: int, onu: dict, config: list[dict], escribir: bool = True,
-           leer_previos: bool = True, tablas=None, muestras=None) -> Counter | None:
+           leer_previos: bool = True, tablas=None, muestras=None, pactivos: list[dict] | None = None) -> Counter | None:
     """Una corrida completa sobre todas las fuentes. Devuelve los contadores, o
-    None si otra corrida tiene el lock."""
+    None si otra corrida tiene el lock. `pactivos`: segunda categoría de pactivos
+    farma (None = la de la BD)."""
     t0 = time.time()
     cats, _errores = motor.compilar(config)
     if not cats:
         # Sin categorías activas el barrido anularía todo lo no revisado: se niega.
         raise RuntimeError("Fase 2: no hay categorías activas; el barrido no corre.")
-    version = motor.version(config)
+    if pactivos is None:
+        pactivos = cargar_pactivos(bd)
+    mapa = {motor.normalizar(p["pactivo"]): p["categoria_codigo"] for p in pactivos if p.get("activa", True)}
+    version = motor.version(config, pactivos)
     st: Counter = Counter()
     if escribir and not bd.lock():
         log.warning("Otra corrida tiene el lock; se salta esta.")
@@ -247,7 +270,7 @@ def correr(bd: BD, tipo: str, dias: int, onu: dict, config: list[dict], escribir
                 log.info("%s: sin filas en los últimos %d días", tabla, dias)
                 continue
             barrer_tabla(bd, cats, version, onu, tabla, r[0], r[1], st,
-                         escribir=escribir, leer_previos=leer_previos, muestras=muestras)
+                         escribir=escribir, leer_previos=leer_previos, muestras=muestras, mapa=mapa)
             log.info("%s: ids %d-%d listos", tabla, r[0], r[1])
     except Exception as exc:  # noqa: BLE001
         error = f"{type(exc).__name__}: {exc}"[:2000]

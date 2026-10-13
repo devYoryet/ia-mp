@@ -172,3 +172,19 @@ CREATE TABLE IF NOT EXISTS clasificador_f2_auditoria_lotes (
   creado_en      DATETIME       NOT NULL,
   PRIMARY KEY (lote)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Segunda categoría interna de un pactivo de FARMA: una fila que farma clasificó como interés
+-- con este pactivo entra también a la categoría de la fase 2 (estado 'farma', señal 'pactivo_farma').
+-- Genérica: cualquier pactivo → cualquier categoría, para cualquier cliente. Editable sin deploy;
+-- desactivar (activa=0) en vez de borrar, para dejar historial.
+CREATE TABLE IF NOT EXISTS clasificador_f2_pactivo_categoria (
+  id                INT           NOT NULL AUTO_INCREMENT,
+  pactivo           VARCHAR(255)  NOT NULL,              -- tal como lo escribe farma (se compara normalizado)
+  categoria_codigo  VARCHAR(20)   NOT NULL,
+  nota              VARCHAR(255),
+  activa            TINYINT(1)    NOT NULL DEFAULT 1,
+  creado_por        VARCHAR(80),
+  creado_en         DATETIME      NOT NULL,
+  PRIMARY KEY (id),
+  KEY idx_activa (activa, pactivo)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

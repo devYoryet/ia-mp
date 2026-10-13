@@ -48,7 +48,8 @@ FUERZA = {"fuerte": 2, "confirma": 1}
 #   1 = v1.1 (2026-10-08)  ·  2 = + señal 'titulo+onu'
 #   3 = + 'titulo' sin ONU (categorías con titulo_solo_a_revision) y exclusiones
 #       que no aplican cuando el ONU es fuerte (salvo_onu_fuerte)
-MOTOR_VERSION = "3"
+#   4 = + segunda categoría de pactivos farma (clasificador_f2_pactivo_categoria)
+MOTOR_VERSION = "4"
 _ESPACIOS = re.compile(r"\s+")
 
 
@@ -232,7 +233,7 @@ def evaluar(categorias: list[Categoria], descripcion: str | None, titulo: str | 
                      tuple(h[0].codigo for h in hits[1:]))
 
 
-def version(categorias: list[dict]) -> str:
+def version(categorias: list[dict], pactivos: list[dict] = ()) -> str:
     """Huella de la configuración ACTIVA. Cambia si cambia cualquier regex,
     código ONU, fuerza, prioridad o flag; el servicio la usa para re-evaluar."""
     def _activos(xs):
@@ -248,6 +249,7 @@ def version(categorias: list[dict]) -> str:
         }
         for c in sorted(_activos(categorias), key=lambda c: c["codigo"])
     ]
+    canon.append(sorted((normalizar(p["pactivo"]), p["categoria_codigo"]) for p in pactivos if p.get("activa", True)))
     return hashlib.sha1(json.dumps(canon, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:16]
 
 

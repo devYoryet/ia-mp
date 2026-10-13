@@ -57,13 +57,14 @@ def main() -> None:
                 onu_ts = time.time()
                 log.info("Diccionario ONU: %d códigos", len(onu))
             config = barrido.cargar_config(bd)
-            version = motor.version(config)
+            pactivos = barrido.cargar_pactivos(bd)
+            version = motor.version(config, pactivos)
             motivo = motivo_profundo(bd, version)
             if motivo:
                 log.info("Barrido profundo (%s)", motivo)
-                barrido.correr(bd, "profundo", DIAS_PROFUNDO, onu, config)
+                barrido.correr(bd, "profundo", DIAS_PROFUNDO, onu, config, pactivos=pactivos)
             else:
-                barrido.correr(bd, "rapido", DIAS_RAPIDO, onu, config)
+                barrido.correr(bd, "rapido", DIAS_RAPIDO, onu, config, pactivos=pactivos)
         except Exception as exc:  # noqa: BLE001
             log.exception("Ciclo falló: %s", exc)
             bd.cerrar()  # reconecta en el próximo ciclo
