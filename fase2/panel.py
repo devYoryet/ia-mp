@@ -322,10 +322,14 @@ def resumen(request: Request, dias: int = 30):
             "SELECT tabla_origen AS t, SUM(estado_auto='verde') AS verde, SUM(estado_auto='revision') AS revision "
             "FROM clasificador_f2_resultado WHERE vigente=1 AND fecha_publicacion >= NOW() - INTERVAL %s DAY GROUP BY 1", (dias,))
         corridas = bd.todos("SELECT tipo, dias, filas_leidas, calzan, insertadas, actualizadas, anuladas, segundos, "
-                            "error, creado_en FROM clasificador_f2_corridas ORDER BY id DESC LIMIT 12")
-        return por, prec, fuentes, corridas, _categorias(bd), _ultima_corrida(bd)
+                            "error, creado_en FROM clasificador_f2_corridas WHERE tipo <> 'entrega' ORDER BY id DESC LIMIT 12")
+        entregas = bd.todos("SELECT rut_cliente, negocio, estado, COUNT(*) AS n, MAX(actualizado_en) AS ult "
+                            "FROM clasificador_f2_entregas GROUP BY 1,2,3 ORDER BY 1,2,3")
+        ult_entrega = bd.uno("SELECT creado_en, insertadas, anuladas, error FROM clasificador_f2_corridas "
+                             "WHERE tipo='entrega' ORDER BY id DESC LIMIT 1")
+        return por, prec, fuentes, corridas, _categorias(bd), _ultima_corrida(bd), entregas, ult_entrega
 
-    por, prec, fuentes, corridas, cats, corrida = _con_bd(_q)
+    por, prec, fuentes, corridas, cats, corrida, entregas, ult_entrega = _con_bd(_q)
     nom = {c["codigo"]: f'{c["linea"]} · {c["nombre"]}' for c in cats}
     e = html.escape
     filas = "".join(
@@ -344,6 +348,8 @@ def resumen(request: Request, dias: int = 30):
         f"<tr><td>{e(str(r['creado_en']))}</td><td>{e(r['tipo'])}</td><td>{r['dias']}</td><td>{r['filas_leidas']}</td>"
         f"<td>{r['calzan']}</td><td>+{r['insertadas']} / {r['actualizadas']} / {r['anuladas']}</td><td>{r['segundos']} s</td>"
         f"<td>{e(r['error'] or 'ok')}</td></tr>" for r in corridas)
+    tent = "".join(f"<tr><td>{e(r['rut_cliente'])}</td><td>{e(r['negocio'])}</td><td>{e(r['estado'])}</td><td>{r['n']}</td>"
+                   f"<td>{e(str(r['ult']))}</td></tr>" for r in entregas) or '<tr><td colspan="5">Todavía no hay entregas.</td></tr>'
     cuerpo = f"""
 <form class="linea" method="get" action="/resumen"><label>Días</label>
 <input type="number" name="dias" value="{dias}" min="1" max="365"><button>Ver</button></form>
@@ -352,6 +358,9 @@ def resumen(request: Request, dias: int = 30):
 <p class="meta">{tfu}</p>
 <h2>Precisión medida (lo que el equipo ya revisó)</h2>
 <table><tr><th>Categoría</th><th>Estado auto</th><th>Señal</th><th>Aprob.</th><th>No aprob.</th><th>% aprobación</th></tr>{tprec}</table>
+<h2>Entregas a clientes (match del gestor 2)</h2>
+<p class="meta">{e(_txt_entrega(ult_entrega))}</p>
+<table><tr><th>RUT cliente</th><th>Unidad</th><th>Estado</th><th>Líneas</th><th>Última</th></tr>{tent}</table>
 <h2>Últimos barridos</h2>
 <table><tr><th>Fecha (Chile)</th><th>Tipo</th><th>Días</th><th>Filas leídas</th><th>Calzan</th><th>+ins / act / anul</th><th>Tiempo</th><th>Estado</th></tr>{tco}</table>
 """
@@ -529,6 +538,14 @@ _ILEGALES_XL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 def _xl(v):
     """openpyxl rechaza caracteres de control (vienen en algunas glosas)."""
     return _ILEGALES_XL.sub(" ", v) if isinstance(v, str) else v
+
+
+def _txt_entrega(u: dict | None) -> str:
+    if not u:
+        return "La entrega no ha corrido."
+    if u["error"]:
+        return f"Última entrega {u['creado_en']} con error: {u['error'][:120]}"
+    return f"Última entrega {u['creado_en']}: {u['insertadas']} nuevas, {u['anuladas']} retiradas."
 
 
 def _estado_txt(f: dict) -> str:

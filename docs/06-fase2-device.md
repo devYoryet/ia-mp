@@ -43,8 +43,21 @@
 >   - Megalabs queda con 3 unidades: 78 Farma, 79 Device (ex Insumos) y 255 Servicio Técnico (nueva).
 >   - **Segunda categoría de pactivos farma** (`clasificador_f2_pactivo_categoria`): una fila de interés farma con
 >     pactivo mapeado entra a la categoría como `farma` (señal `pactivo_farma`). Suma +595 apósitos en 30 días.
->   - Regla de asignado para la entrega (la hace prime): `vigente=1 AND (decision='aprobado' OR (decision IS NULL
+>   - Regla de asignado para la entrega (la hace el gestor 2, `fase2/entrega.py`): `vigente=1 AND (decision='aprobado' OR (decision IS NULL
 >     AND estado_auto IN ('verde','farma')))`.
+>
+> - **E5, entrega en producción desde 2026-10-13** (`fase2/entrega.py`, "match del gestor 2"):
+>   - mismo match que el gestor 1, pero por diccionario sobre `clasificador_f2_resultado`: una unidad recibe
+>     una categoría si su `diccionario_unidad` tiene `pactivo` = nombre de la categoría;
+>   - copia a las tablas por cliente en el clásico y en prime, con la misma fila que el gestor 1, sin marca en
+>     tablas ajenas; lo propio queda en `clasificador_f2_entregas`;
+>   - Megalabs: unidad 79 Device con 5 entradas y 255 Servicio Técnico con 1 (ids 22310–22315);
+>   - primer ciclo: 543 líneas, todas en ambas copias; lo existente de Megalabs quedó idéntico (medido);
+>   - los ciclos siguientes (cada 10 min) sólo agregan lo recién asignado: 568 líneas a las 18:40 del 13-oct,
+>     el libro igual a lo agregado en cada copia y sin duplicados (medido). Lo que cierra deja de ser candidato
+>     y queda como historial; no se retira.
+>
+>   Pendiente: los correos de prime no incluyen estas líneas (los arma desde las tablas de farma).
 >
 > Los números salen de datos reales medidos a $0, sin llamar a la API (salvo la auditoría, que se indica). Donde dice
 > *inferido* es una estimación sobre muestras revisadas a mano, no una medición.

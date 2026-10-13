@@ -41,6 +41,11 @@ class FakeBD:
                 if params[0] == "c@x.cl" else []
         if "FROM clasificador_f2_categorias" in s:
             return CATS
+        if "FROM clasificador_f2_entregas" in s:
+            return [{"rut_cliente": "94544000-7", "negocio": "Device", "estado": "entregada", "n": 329,
+                     "ult": datetime(2026, 10, 13, 17, 20)}]
+        if "tipo='entrega'" in s:
+            return [{"creado_en": datetime(2026, 10, 13, 17, 20), "insertadas": 543, "anuladas": 0, "error": None}]
         if "FROM clasificador_f2_corridas" in s:
             return [{"tipo": "rapido", "creado_en": datetime(2026, 10, 8, 16, 47), "segundos": 9, "error": None,
                      "hace": 3, "dias": 3, "filas_leidas": 1, "calzan": 1, "insertadas": 0, "actualizadas": 0,
@@ -151,6 +156,7 @@ def test_resumen(cli):
     _login(cli)
     r = cli.get("/resumen")
     assert r.status_code == 200 and "Precisión medida" in r.text and "90%" in r.text
+    assert "Entregas a clientes" in r.text and "543 nuevas" in r.text
 
 
 def test_next_no_permite_redireccion_externa():

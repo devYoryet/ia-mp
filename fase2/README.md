@@ -31,6 +31,7 @@ Si calzan las dos señales, la fila queda en **verde**. Si calza una sola, va a
 | `barrido.py` | lee las fuentes por bloques de PK y escribe sólo en `clasificador_f2_*` |
 | `servicio.py` | loop: barrido rápido (3 días) cada 10 minutos, profundo (60 días) a diario y cuando cambian las reglas |
 | `panel.py` | panel de revisión en http://10.0.0.70:8810 (red interna / VPN), con el login del equipo. Sólo escribe las columnas de revisión humana |
+| `entrega.py` | **match del gestor 2**: copia lo asignado (verde, aprobado y "En farma"), abierto y de los últimos 30 días, a las tablas por cliente (`Licitaciones_diarias_clientes[_agil|_cotizaciones]`, clásico y prime) de toda unidad cuyo diccionario tenga la categoría. Sólo inserta filas nuevas idénticas a las del gestor 1; lo propio vive en `clasificador_f2_entregas`. Container `ia-mp-fase2-entrega`, usuario `ia_f2_entrega` (sin UPDATE) |
 | `auditoria_ia.py` | auditoría con IA de lo que la fase 2 NO rescató: muestra por estrato (casi calzan, ONU de salud, resto), revisión por lote con tope de gasto, estimado de faltantes. Gasta API: la corre una persona |
 | `backtest_fase2.py` | mide sin escribir: volumen por categoría y señal, y precisión de lo revisado |
 | `admin.py` | tareas de una persona con credenciales de administrador: tablas, usuario, semilla, verificación |
@@ -50,6 +51,13 @@ cd /opt/ia-mp-fase2/fase2 && docker compose down
 
 # auditoría con IA de lo NO rescatado (gasta API: tope en US$; registra el costo en clasificador_ia_costos)
 python auditoria_ia.py --dias 30 --tope-usd 10 --excel auditoria.xlsx   # vista: http://10.0.0.70:8810/auditoria
+
+# suscribir una unidad de negocio a una categoría (cualquier cliente): entrada en diccionario_unidad
+python admin.py suscribir --unidad 79 --categoria "Guantes médicos"            # comodín Sin cla
+# entrega: F2E_ACTIVA (0 = en seco) y F2E_RUTS (vacío = todos los que tengan entradas) en .env.entrega
+python entrega.py --seco --una-vez
+# revertir TODA la entrega: borrar de las 3 tablas por cliente (clásico y prime) las filas del libro
+SELECT destino, COUNT(*) FROM clasificador_f2_entregas WHERE estado='entregada' GROUP BY 1;
 
 # bitácora de corridas
 SELECT * FROM clasificador_f2_corridas ORDER BY id DESC LIMIT 10;
