@@ -39,6 +39,13 @@
 >   - estimado: ~630 de los ~958 recuperados, con precisión ~92 % en verde y ~66 % en revisión;
 >   - backtest de 30 días: verde 64,7→77,3/día y revisión 36,0→44,7/día.
 >
+> - **2026-10-13:**
+>   - Megalabs queda con 3 unidades: 78 Farma, 79 Device (ex Insumos) y 255 Servicio Técnico (nueva).
+>   - **Segunda categoría de pactivos farma** (`clasificador_f2_pactivo_categoria`): una fila de interés farma con
+>     pactivo mapeado entra a la categoría como `farma` (señal `pactivo_farma`). Suma +595 apósitos en 30 días.
+>   - Regla de asignado para la entrega (la hace prime): `vigente=1 AND (decision='aprobado' OR (decision IS NULL
+>     AND estado_auto IN ('verde','farma')))`.
+>
 > Los números salen de datos reales medidos a $0, sin llamar a la API (salvo la auditoría, que se indica). Donde dice
 > *inferido* es una estimación sobre muestras revisadas a mano, no una medición.
 
