@@ -23,6 +23,10 @@ import requests
 from cierre_adj import bd, mercadopublico as mp, reglas
 
 
+class NoCalza(RuntimeError):
+    """Lo escrito no coincide con la regla calculada desde el clásico."""
+
+
 # ---------------------------------------------------------------- listado ---
 
 def listado_desde_api(cn_c, api_mes: dict, log=print) -> list[str]:
@@ -341,11 +345,14 @@ def recalcular_oc(cn_c, cn_o, mes: str, esp: dict, log=print) -> None:
         cur.execute(f"CALL {bd.DB_TM}.insertarTablaConsulta3(%s, %s)", (ini, fin))
         cur.execute(f"CALL {bd.DB_TM}.insertarTablaConsulta5(%s, %s)", (ini, fin))
     cn_o.commit()
-    c3 = reglas.comparar(esp["firma_c3"], reglas.firma_c3(reglas.consulta_actual(cn_o, "consulta3", mes)))
+    real_c3 = reglas.consulta_actual(cn_o, "consulta3", mes)
+    c3 = reglas.comparar(esp["firma_c3"], reglas.firma_c3(real_c3))
     c5 = reglas.comparar(esp["firma_c5"], reglas.firma_c5(reglas.consulta_actual(cn_o, "consulta5", mes)))
     log(f"   OC {mes}: consulta3 {c3} | consulta5 {c5}")
     if not (c3["iguales"] and c5["iguales"]):
-        raise RuntimeError(f"OC {mes}: el resultado de los procedimientos no calza con la regla; no se publica en prime")
+        dif = reglas.diferencias_por_licitacion(esp["c3"], real_c3)
+        raise NoCalza(f"OC {mes}: el resultado de los procedimientos no calza con la regla; no se publica en prime. "
+                      f"consulta3 por licitación (regla, OC): {dif or 'mismos conteos, distinto contenido'}")
 
 
 def publicar_consulta5(cn_o, cn_p, mes: str, esp: dict, log=print) -> None:
@@ -359,7 +366,7 @@ def publicar_consulta5(cn_o, cn_p, mes: str, esp: dict, log=print) -> None:
         bd.insertar_lotes(cn_p, f"INSERT INTO {bd.DB_TM}.consulta5 ({cols}) VALUES", filas)
         comp = reglas.comparar(esp["firma_c5"], reglas.firma_c5(reglas.consulta_actual(cn_p, "consulta5", mes)))
         if not comp["iguales"]:
-            raise RuntimeError(f"prime consulta5 {mes}: escrito != regla {comp}")
+            raise NoCalza(f"prime consulta5 {mes}: escrito != regla {comp}")
         cn_p.commit()
     except Exception:
         cn_p.rollback()

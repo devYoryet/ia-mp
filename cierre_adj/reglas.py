@@ -75,6 +75,14 @@ def firma(filas, idx_float: int | None = None) -> Counter:
     return c
 
 
+def diferencias_por_licitacion(esperadas: list[tuple], reales: list[tuple], tope: int = 10) -> dict:
+    """{licitación: (filas esperadas, filas reales)} donde el conteo difiere.
+    ADQUISICION es la 1ª columna en Licitaciones, consulta3 y consulta5."""
+    e, r = Counter(f[0] for f in esperadas), Counter(f[0] for f in reales)
+    dif = {k: (e.get(k, 0), r.get(k, 0)) for k in set(e) | set(r) if e.get(k, 0) != r.get(k, 0)}
+    return dict(sorted(dif.items(), key=lambda kv: -abs(kv[1][0] - kv[1][1]))[:tope])
+
+
 def comparar(esperado: Counter, real: Counter) -> dict:
     faltan = esperado - real
     sobran = real - esperado
@@ -116,8 +124,17 @@ def resumen_actual(cn, mes: str, tabla: str) -> list[tuple]:
 
 # ------------------------------------------------------- consulta3 / consulta5 ---
 
+def clave_rut(rut) -> str:
+    """El RUT como lo compara el IN de insertarTablaConsulta3 en el OC: collation
+    _ci (sin mayúsculas) y PAD SPACE (sin espacios finales). Medido 2026-10-13:
+    '76.776.328-k' de Licitaciones calza en el OC con '76.776.328-K' de Base; la
+    comparación exacta lo dejaba fuera (5 filas de 1110404-149-L126 de más en el OC)."""
+    return (rut or "").rstrip().upper()
+
+
 def ruts_base(cn) -> set[str]:
-    return {r[0] for r in bd.todos(cn, f"SELECT DISTINCT rutproveedor FROM {bd.DB_BASE}.Base") if r[0] is not None}
+    return {clave_rut(r[0]) for r in bd.todos(cn, f"SELECT DISTINCT rutproveedor FROM {bd.DB_BASE}.Base")
+            if r[0] is not None}
 
 
 def consulta3_esperado(cn_clasico, mes: str) -> list[tuple]:
@@ -125,13 +142,18 @@ def consulta3_esperado(cn_clasico, mes: str) -> list[tuple]:
 
     En dos pasos: el IN con subconsulta en una sola query tardaba 97 s en el
     clásico (julio); primero las licitaciones del mes con proveedor de Base y
-    después sus filas por lotes."""
+    después sus filas por lotes.
+
+    Solo cuenta las filas del mes. La subconsulta del procedimiento no filtra
+    por fecha, pero el OC solo tiene Licitaciones desde 2026-03: las que
+    calificarían por filas de 2025 (medido: 621-912-LR25 en abril,
+    948355-7-LE25 en julio) tampoco entran en el OC."""
     ini, fin = bd.rango_mes(mes)
     ruts = ruts_base(cn_clasico)
     adqs = sorted({a for a, r in bd.todos(
         cn_clasico,
         f"SELECT ADQUISICION, RUTPROVEEDORES FROM {bd.DB_ADJ}.Licitaciones WHERE FECHASQL BETWEEN %s AND %s",
-        (ini, fin)) if r in ruts})
+        (ini, fin)) if clave_rut(r) in ruts})
     cols = ",".join(bd.COLS_LICITACIONES)
     filas: list[tuple] = []
     for trozo in bd.trozos(adqs, 300):

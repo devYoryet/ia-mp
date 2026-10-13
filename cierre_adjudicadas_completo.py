@@ -28,12 +28,17 @@ Uso:
     python cierre_adjudicadas_completo.py --modo cierre            # mes anterior
     python cierre_adjudicadas_completo.py --modo cierre --forzar   # ignora el sello
 
-Cron en gestor_oc (el panel corre con network_mode: host para llegar al MySQL local):
-    0 7 1  * * cd /opt/ia-mp && docker compose exec -T panel python /app/cierre_adjudicadas_completo.py --modo cierre
-    0 7 15 * * cd /opt/ia-mp && docker compose exec -T panel python /app/cierre_adjudicadas_completo.py --modo cierre --forzar
+Cron en gestor_oc (el panel corre con network_mode: host para llegar al MySQL local;
+`run --rm` y no `exec`: el restart de las 03:00 mata los procesos del panel):
+    0 7 1-7 * * cd /opt/ia-mp && docker compose run -T --rm --no-deps panel python /app/cierre_adjudicadas_completo.py --modo cierre
+    0 7 15  * * cd /opt/ia-mp && docker compose run -T --rm --no-deps panel python /app/cierre_adjudicadas_completo.py --modo cierre --forzar
+Días 1 a 7: si el cierre del día 1 falla, el día siguiente lo reintenta solo;
+con el sello escrito las corridas siguientes terminan al instante. La API ya
+consultada queda en caché, así que un reintento no repite las ~3 h de la V4.
 El día 15 repite el cierre del mes anterior: publicados y cerrados son una foto
 del día en que se calculan; el batch histórico corría ~el 15 (medido: julio
 2026 en tabla 4.511 proveedores = corte 15-08; con corte día 1 serían 2.073).
+Correo técnico (correo.py) con FALLA, AVISO o caída; aviso a gerencia al cerrar.
 
 Salida: log en <LEGACY_TEMP_DIR>/cierre_adjudicadas.log (lo lee el panel),
 copia en cierre_adjudicadas/logs/ y reporte JSON por mes en
@@ -179,6 +184,52 @@ def universo_v4(C, mes: str, esp: dict) -> list[str]:
     return sorted({f[i_adq] for f in esp["c3"]} | set(estado["marcadas_sin_filas"]))
 
 
+def publicar_mes(C, P, O, m: str, es_el_mes: bool, acciones: list) -> None:
+    """Paso 4 para un mes: Licitaciones a prime, resumen, OC y consulta5."""
+    n = pasos.sincronizar_prime(C, P, m, log)
+    if n:
+        acciones.append({"paso": "prime Licitaciones", "mes": m, "filas": n})
+    if es_el_mes:
+        pasos.escribir_resumen(C, P, m, [t for t, *_ in reglas.TABLAS_RESUMEN], DIR_TRABAJO / "respaldos", log)
+        acciones.append({"paso": "resumen 6 tablas", "mes": m})
+    else:
+        r6 = v.v6_resumen(C, P, m, mes_cerrado=False)
+        recalc, copiar = [], []
+        for t, _c, _s, foto in reglas.TABLAS_RESUMEN:
+            comp = r6.detalle["tablas"][t]
+            if not foto and not comp["clasico"]["iguales"]:
+                recalc.append(t)
+            elif not comp["prime"]["iguales"]:
+                copiar.append(t)
+        if recalc:
+            pasos.escribir_resumen(C, P, m, recalc, DIR_TRABAJO / "respaldos", log)
+            acciones.append({"paso": "resumen recalculado", "mes": m, "tablas": recalc})
+        if copiar:
+            pasos.copiar_resumen_a_prime(C, P, m, copiar, DIR_TRABAJO / "respaldos", log)
+            acciones.append({"paso": "resumen copiado a prime", "mes": m, "tablas": copiar})
+    esp = v.esperado_consultas(C, m)
+    if es_el_mes or v.v7_oc(O, m, esp).estado != "ok" or v.v8_prime_consulta5(P, m, esp).estado != "ok":
+        # El clásico cambia mientras corre el cierre (el proceso diario baja actas
+        # con FECHASQL del mes y se clasifica en el panel): si no calza, se
+        # recalcula la regla y se repite una vez antes de dar el mes por fallado.
+        for intento in (1, 2):
+            try:
+                pasos.recalcular_oc(C, O, m, esp, log)
+                break
+            except pasos.NoCalza as exc:
+                if intento == 2:
+                    raise
+                log(f"   {exc}")
+                log("   se recalcula la regla desde el clásico y se repite el OC una vez")
+                mantener_vivas(C, P, O)
+                esp = v.esperado_consultas(C, m)
+        pasos.publicar_consulta5(O, P, m, esp, log)
+        acciones.append({"paso": "OC consulta1/3/5 + prime consulta5", "mes": m, "filas": len(esp["c5"])})
+    else:
+        log(f"   OC y prime consulta5 {m}: ya calzan con la regla")
+    pasos.asegurar_fecha(P, m, log)
+
+
 def correr(a) -> int:
     mes = a.mes
     meses = bd.meses_hacia_atras(mes, 1 if a.solo_mes else MESES_REVISION)
@@ -247,39 +298,22 @@ def correr(a) -> int:
         log(f"   [{v4_mes.estado.upper():5}] V4 {v4_mes.resumen}")
 
     if a.modo == "cierre":
-        # 4. publicación por mes (el mes cerrado primero)
+        # 4. publicación por mes (el mes cerrado primero). Un mes que falla no
+        # detiene a los demás: la validación final lo deja en falla y la corrida
+        # del día siguiente lo vuelve a intentar.
         for m in meses:
             mantener_vivas(C, P, O)
             log(f"-- Publicación {m}")
-            n = pasos.sincronizar_prime(C, P, m, log)
-            if n:
-                acciones.append({"paso": "prime Licitaciones", "mes": m, "filas": n})
-            if m == mes:
-                pasos.escribir_resumen(C, P, m, [t for t, *_ in reglas.TABLAS_RESUMEN], DIR_TRABAJO / "respaldos", log)
-                acciones.append({"paso": "resumen 6 tablas", "mes": m})
-            else:
-                r6 = v.v6_resumen(C, P, m, mes_cerrado=False)
-                recalc, copiar = [], []
-                for t, _c, _s, foto in reglas.TABLAS_RESUMEN:
-                    comp = r6.detalle["tablas"][t]
-                    if not foto and not comp["clasico"]["iguales"]:
-                        recalc.append(t)
-                    elif not comp["prime"]["iguales"]:
-                        copiar.append(t)
-                if recalc:
-                    pasos.escribir_resumen(C, P, m, recalc, DIR_TRABAJO / "respaldos", log)
-                    acciones.append({"paso": "resumen recalculado", "mes": m, "tablas": recalc})
-                if copiar:
-                    pasos.copiar_resumen_a_prime(C, P, m, copiar, DIR_TRABAJO / "respaldos", log)
-                    acciones.append({"paso": "resumen copiado a prime", "mes": m, "tablas": copiar})
-            esp = v.esperado_consultas(C, m)
-            if m == mes or v.v7_oc(O, m, esp).estado != "ok" or v.v8_prime_consulta5(P, m, esp).estado != "ok":
-                pasos.recalcular_oc(C, O, m, esp, log)
-                pasos.publicar_consulta5(O, P, m, esp, log)
-                acciones.append({"paso": "OC consulta1/3/5 + prime consulta5", "mes": m, "filas": len(esp["c5"])})
-            else:
-                log(f"   OC y prime consulta5 {m}: ya calzan con la regla")
-            pasos.asegurar_fecha(P, m, log)
+            try:
+                publicar_mes(C, P, O, m, m == mes, acciones)
+            except Exception as exc:  # noqa: BLE001
+                log(f"   ERROR en la publicación de {m}: {type(exc).__name__}: {exc}")
+                acciones.append({"paso": "ERROR", "mes": m, "error": f"{type(exc).__name__}: {exc}"[:1000]})
+                for cn in (C, P, O):
+                    try:
+                        cn.rollback()
+                    except Exception:  # noqa: BLE001
+                        pass
 
     # 5. validación final
     estado_mes = "ok"
@@ -318,7 +352,9 @@ def correr(a) -> int:
                 correos.aviso_cierre_adjudicadas(anio, num, log)
                 if cenabast:
                     correos.aviso_cenabast_csv(anio, num, cenabast[0], cenabast[1], log)
-        else:
+        if estado_mes != "ok":
+            # Resumen técnico también con aviso: un aviso del mes cerrado (p. ej. un
+            # acta que el portal no genera) necesita que alguien lo mire.
             resumen_acciones = [{k: (len(val) if isinstance(val, list) and k in ("nuevas", "incompletas") else val)
                                  for k, val in x.items()} for x in acciones]
             correo.enviar(f"Cierre Adjudicadas {mes}: {estado_mes.upper()}",
@@ -361,6 +397,13 @@ def main() -> int:
             log("   " + linea)
         log(f"{TOK_FIN} · con error")
         rc = 2
+        if a.modo == "cierre":
+            # Sin este correo la caída del 1-oct-2026 pasó 12 días sin que nadie la viera.
+            try:
+                correo.enviar(f"Cierre Adjudicadas {a.mes}: ERROR",
+                              correo.cuerpo_html(a.mes, "falla", {}, [], _lineas), log)
+            except Exception as exc2:  # noqa: BLE001
+                log(f"   no se pudo enviar el correo de error: {exc2}")
     finally:
         log(f"Duración: {(time.monotonic() - t0) / 60:.1f} min")
         for fh in _logs:

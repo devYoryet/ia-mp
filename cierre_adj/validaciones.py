@@ -3,7 +3,8 @@
     V1 días del mes con listado diario descargado (monitoreo_descarga)
     V2 listado completo: lo que la API informa como adjudicado está en listado_api
     V3 actas: cada licitación del listado tiene filas en Licitaciones o una
-       razón (desierta / sin ítems); pendientes estado=0
+       razón (desierta / sin ítems / el portal no logra generar el acta);
+       pendientes estado=0
     V4 actas completas: ítems adjudicados según la API == ítems 'Adjudicada'
        descargados (licitaciones que entran a consulta5 + las sin filas)
     V5 Licitaciones del mes: clásico == prime (filas por licitación)
@@ -19,6 +20,8 @@ from __future__ import annotations
 
 import calendar
 import json
+import os
+from collections import Counter
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime
 from pathlib import Path
@@ -110,6 +113,14 @@ def v2_listado_vs_api(cn_c, mes: str, api_mes: dict | None) -> Resultado:
 
 # ------------------------------------------------------------------ V3 ---
 
+# Pendientes con tantos intentos fallidos son actas que el portal no logra
+# generar, no un corte de red: 3932-1-LP26 (1.490 ítems) da 504 del balanceador
+# a los 60 s en 30 intentos (11-sep a 13-oct-2026) y el proceso diario deja de
+# reintentar a los 30. Siguen reintentándose en cada cierre, pero ya no bloquean
+# el sello: se informan como aviso con el detalle para decidir a mano.
+INTENTOS_NO_DESCARGABLE = int(os.getenv("ADJ_INTENTOS_NO_DESCARGABLE", "20"))
+
+
 def estado_actas(cn_c, mes: str) -> dict:
     ini, fin = bd.rango_mes(mes)
     filas = bd.todos(
@@ -131,12 +142,16 @@ def estado_actas(cn_c, mes: str) -> dict:
                 WHERE licitacion IN ({marcas}) ORDER BY id""", vals):
             ultimo_error[lic] = msj or ""
     sin_acta = [x for x in pendientes if "Sin acta" in ultimo_error.get(x, "")]
+    intentos = {f[0]: f[2] for f in filas}
+    no_descargables = [x for x in pendientes if x not in sin_acta and intentos[x] >= INTENTOS_NO_DESCARGABLE]
     return {
         "total": len(filas),
         "con_filas": [f[0] for f in filas if f[3]],
         # Mercado Público aún no publica el acta: no es un error nuestro, se reintenta.
         "sin_acta_en_mp": sin_acta,
-        "pendientes": [x for x in pendientes if x not in sin_acta],
+        "no_descargables": [{"licitacion": x, "intentos": intentos[x], "ultimo_error": ultimo_error.get(x, "")[:200]}
+                            for x in no_descargables],
+        "pendientes": [x for x in pendientes if x not in sin_acta and x not in no_descargables],
         "marcadas_sin_filas": [f[0] for f in filas if f[1] != 0 and not f[3]],
         "pendientes_con_filas": [f[0] for f in filas if f[1] == 0 and f[3]],
     }
@@ -147,35 +162,44 @@ def v3_actas(cn_c, mes: str) -> Resultado:
     e = estado_actas(cn_c, mes)
     r.detalle = {k: v for k, v in e.items() if k != "con_filas"}
     r.detalle["con_filas"] = len(e["con_filas"])
-    avisos = e["sin_acta_en_mp"] or e["marcadas_sin_filas"]
+    avisos = e["sin_acta_en_mp"] or e["marcadas_sin_filas"] or e["no_descargables"]
     r.estado = "falla" if e["pendientes"] else ("aviso" if avisos else "ok")
     r.resumen = (f"{e['total']} en listado; con acta {len(e['con_filas'])}; pendientes por error {len(e['pendientes'])}; "
                  f"sin acta publicada en MP {len(e['sin_acta_en_mp'])}; "
                  f"marcadas sin filas (desierta/sin ítems, se verifican en V4) {len(e['marcadas_sin_filas'])}")
+    if e["no_descargables"]:
+        r.resumen += (f"; el portal no logra generar el acta (≥{INTENTOS_NO_DESCARGABLE} intentos, no bloquea el sello): "
+                      + ", ".join(f"{x['licitacion']} ({x['intentos']})" for x in e["no_descargables"][:10]))
     return r
 
 
 # ------------------------------------------------------------------ V4 ---
 
 def items_adjudicados_bd(cn_c, codigos) -> dict:
-    """licitación -> conjunto de números de ítem con alguna fila 'Adjudicada'."""
+    """licitación -> {(número de ítem, código ONU, RUT)} de las filas 'Adjudicada'."""
     out: dict = {c: set() for c in codigos}
     for trozo in bd.trozos(sorted(codigos), 500):
         marcas, vals = bd.en_lista(trozo)
-        for adq, num in bd.todos(
+        for adq, num, onu, rut in bd.todos(
             cn_c,
-            f"""SELECT DISTINCT ADQUISICION, NUMPROD FROM {bd.DB_ADJ}.Licitaciones
+            f"""SELECT DISTINCT ADQUISICION, NUMPROD, CODONU, RUTPROVEEDORES FROM {bd.DB_ADJ}.Licitaciones
                 WHERE ESTADO = 'Adjudicada' AND ADQUISICION IN ({marcas})""",
             vals):
             if num is not None:
-                out.setdefault(adq, set()).add(int(num))
+                out.setdefault(adq, set()).add((int(num), mp.clave_onu(onu), reglas.clave_rut(rut)))
     return out
 
 
 def v4_actas_vs_api(cn_c, codigos: list[str], cache: Path | None = None, log=print, con_api: bool = True,
                     latido=None) -> Resultado:
     """Compara ítems adjudicados API vs BD. Las coincidencias se cachean (un acta
-    completa no cambia) para no repetir ~900 llamadas en cada validación."""
+    completa no cambia) para no repetir ~900 llamadas en cada validación.
+
+    Compara el multiconjunto (código ONU, RUT adjudicado), no el número de ítem:
+    el Correlativo de la API no es la numeración del acta (ver
+    mercadopublico.detalle). Por número daba 12 falsas incompletas en sep-2026,
+    todas con la misma cantidad de ítems en la API y en la BD, que ninguna
+    re-descarga arreglaba."""
     r = Resultado("V4", "Actas completas (ningún ítem adjudicado en la API falta en la BD)")
     if not con_api:
         r.resumen = "sin consultar la API (usar 'validar con API')"
@@ -187,10 +211,14 @@ def v4_actas_vs_api(cn_c, codigos: list[str], cache: Path | None = None, log=pri
         except (OSError, ValueError):
             ok_previos = {}
     bd_items = items_adjudicados_bd(cn_c, codigos)
-    incompletas, no_api, api_atrasada, verificadas = [], [], [], 0
+
+    def n_items(cod) -> int:
+        return len({num for num, _, _ in bd_items.get(cod, ())})
+
+    incompletas, no_api, api_atrasada, verificadas, renumeradas = [], [], [], 0, 0
     # En caché se guarda cuántos ítems adjudicados tenía la BD al verificar: si
     # cambia, se vuelve a consultar.
-    pendientes = [c for c in codigos if ok_previos.get(c) != len(bd_items.get(c, ()))]
+    pendientes = [c for c in codigos if ok_previos.get(c) != n_items(c)]
     log(f"   V4: {len(codigos)} licitaciones; {len(codigos) - len(pendientes)} ya verificadas antes; consulto {len(pendientes)} en la API")
     for i, cod in enumerate(pendientes, 1):
         try:
@@ -201,16 +229,21 @@ def v4_actas_vs_api(cn_c, codigos: list[str], cache: Path | None = None, log=pri
         if det is None:
             no_api.append({"codigo": cod, "error": "la API no la conoce"})
             continue
-        api_set, bd_set = set(det["adjudicados"]), bd_items.get(cod, set())
-        faltan = sorted(api_set - bd_set)
+        filas_bd = bd_items.get(cod, set())
+        api_claves = Counter((onu, rut) for _, onu, rut in det["adjudicaciones"])
+        bd_claves = Counter((onu, rut) for _, onu, rut in filas_bd)
+        faltan = api_claves - bd_claves
         if faltan:
-            incompletas.append({"codigo": cod, "items_faltantes": faltan[:50], "api": len(api_set), "bd": len(bd_set),
+            incompletas.append({"codigo": cod, "faltan": [f"{onu} {rut}" for onu, rut in sorted(faltan)][:50],
+                                "api": sum(api_claves.values()), "bd": sum(bd_claves.values()),
                                 "estado_api": det["estado"], "fecha_adjudicacion": det["fecha_adjudicacion"]})
         else:
-            ok_previos[cod] = len(bd_set)
+            ok_previos[cod] = n_items(cod)
             verificadas += 1
-            if bd_set - api_set:
-                api_atrasada.append({"codigo": cod, "api": len(api_set), "bd": len(bd_set)})
+            if set(det["adjudicados"]) != {num for num, _, _ in filas_bd}:
+                renumeradas += 1
+            if bd_claves - api_claves:
+                api_atrasada.append({"codigo": cod, "api": sum(api_claves.values()), "bd": sum(bd_claves.values())})
         if i % 25 == 0:
             if cache:
                 cache.parent.mkdir(parents=True, exist_ok=True)
@@ -224,7 +257,8 @@ def v4_actas_vs_api(cn_c, codigos: list[str], cache: Path | None = None, log=pri
     r.estado = "falla" if incompletas or no_api else ("aviso" if api_atrasada else "ok")
     r.resumen = (f"{len(codigos)} verificadas contra la API; con ítems adjudicados que faltan en la BD: {len(incompletas)}; "
                  f"sin respuesta de la API {len(no_api)}; "
-                 f"la API aún no informa adjudicaciones que el acta sí tiene: {len(api_atrasada)}")
+                 f"la API aún no informa adjudicaciones que el acta sí tiene: {len(api_atrasada)}"
+                 + (f"; completas con otra numeración de ítems que la API: {renumeradas}" if renumeradas else ""))
     r.detalle = {"incompletas": incompletas, "sin_api": no_api, "api_atrasada": api_atrasada}
     return r
 

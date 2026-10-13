@@ -105,7 +105,26 @@ def detalle(codigo: str) -> dict | None:
         "adjudicados": sorted({int(float(it["Correlativo"])) for it in items
                                if it.get("Adjudicacion") and (it["Adjudicacion"] or {}).get("RutProveedor")
                                and it.get("Correlativo") is not None}),
+        # (Correlativo, código ONU, RUT adjudicado). El Correlativo de la API NO es
+        # el número de ítem del acta: la API conserva la numeración original (con
+        # huecos y otro orden) y el acta numera por posición (medido 2026-10-13:
+        # 4172-20-L126 API 1..66 sin el 12, acta 1..65). La V4 compara por
+        # (código ONU, RUT), que no depende de la numeración.
+        "adjudicaciones": sorted({(int(float(it["Correlativo"])), clave_onu(it.get("CodigoProducto")),
+                                   (it["Adjudicacion"]["RutProveedor"] or "").rstrip().upper())
+                                  for it in items
+                                  if it.get("Adjudicacion") and (it["Adjudicacion"] or {}).get("RutProveedor")
+                                  and it.get("Correlativo") is not None}),
     }
+
+
+def clave_onu(codigo) -> str:
+    """Código ONU comparable entre la API (entero) y el acta (texto)."""
+    txt = str(codigo if codigo is not None else "").strip()
+    try:
+        return str(int(float(txt)))
+    except ValueError:
+        return txt
 
 
 # ------------------------------------------------------------------ portal ---
