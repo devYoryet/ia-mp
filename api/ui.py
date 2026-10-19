@@ -288,6 +288,14 @@ _EMAILS_PANEL_COMPLETO = {
     "m.saavedra@pharmatender.cl",
 }
 
+# Fuera del panel completo, quiénes además ven la sección Legacy (cargas
+# portadas del gestor_oc). Alta 2026-10-19 por pedido de Yoryet. El cierre de
+# adjudicadas sigue restringido a EMAILS_CIERRE (api/legacy.py).
+EMAILS_LEGACY = {
+    "b.saavedra@pharmatender.cl",
+    "h.opazo@pharmatender.cl",
+}
+
 
 def escape(v) -> str:
     return html.escape("" if v is None else str(v))
@@ -322,7 +330,9 @@ def layout(titulo: str, cuerpo: str, usuario: dict | None = None) -> str:
             ("Cola de revisión", "/revision"),
             ("Reglas", "/reglas"),
         )
-    nav = "".join(f"<a href='{h}'>{escape(t)}</a>" for t, h in _items)
+    if _email in EMAILS_LEGACY and _email not in _EMAILS_PANEL_COMPLETO:
+        _items += (("Legacy", "/legacy"),)
+    nav ="".join(f"<a href='{h}'>{escape(t)}</a>" for t, h in _items)
     if usuario and usuario.get("name"):
         chip = (
             f"<span class='usuario'>"
