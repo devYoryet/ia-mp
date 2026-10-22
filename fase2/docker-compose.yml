@@ -5,6 +5,7 @@
 #   fase2  → servicio.py: barrido rápido cada 10 min y profundo diario
 #   panel  → panel.py:    revisión (aprobar / no aprobar), puerto 8810
 #   entrega → entrega.py: match del gestor 2 (copia lo asignado a las tablas por cliente; .env.entrega)
+#   vigia   → vigia.py:   NO queda corriendo; lo lanza el cron del host cada 10 min (perfil "vigia")
 # Se despliega a mano en gestor_oc:
 #     cd /opt/ia-mp-fase2/fase2 && ./desplegar.sh
 # Apagarlo no afecta a nada:   docker compose down
@@ -36,11 +37,11 @@ services:
     container_name: ia-mp-fase2-panel
     command: uvicorn panel:app --host 0.0.0.0 --port 8810
     env_file: .env
-    # Puerto propio (el panel del clasificador usa 8800). Accesible en la red
-    # interna / VPN: http://10.0.0.70:8810. Publicarlo bajo el dominio es una
-    # location nueva en nginx, que no se hace sin pedirlo.
+    # Puerto propio (el panel del clasificador usa 8800), SÓLO en localhost: se
+    # entra por https://device.pharmatender.cl (vhost nginx propio, ver
+    # nginx-device.conf). La cookie es sólo HTTPS (F2_COOKIE_SEGURA=1 en .env).
     ports:
-      - "8810:8810"
+      - "127.0.0.1:8810:8810"
     restart: unless-stopped
     mem_limit: 384m
     cpus: "0.5"
@@ -55,5 +56,22 @@ services:
     env_file: .env.entrega
     restart: unless-stopped
     mem_limit: 256m
+    cpus: "0.25"
+    logging: *log
+
+  vigia:
+    image: clasificador-f2:latest
+    # Fuera del `up -d`: lo corre el cron del host (ver vigia.py). Red del host
+    # para llegar al nginx local (127.0.0.1:443) y al panel (127.0.0.1:8810).
+    profiles: ["vigia"]
+    command: python vigia.py
+    env_file:
+      - .env
+      - path: .env.vigia
+        required: false
+    network_mode: host
+    volumes:
+      - ./estado_vigia:/estado
+    mem_limit: 128m
     cpus: "0.25"
     logging: *log

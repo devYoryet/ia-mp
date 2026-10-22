@@ -2,3 +2,5 @@
 __pycache__/
 .pytest_cache/
 .env.entrega
+.env.vigia
+estado_vigia/

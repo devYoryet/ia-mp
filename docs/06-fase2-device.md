@@ -46,6 +46,11 @@
 >   - Regla de asignado para la entrega (la hace el gestor 2, `fase2/entrega.py`): `vigente=1 AND (decision='aprobado' OR (decision IS NULL
 >     AND estado_auto IN ('verde','farma')))`.
 >
+> - **Panel público desde 2026-10-22:** https://device.pharmatender.cl, con vhost nginx propio y certificado
+>   Let's Encrypt en modo webroot. Los vhost de iabot y phpMyAdmin no se tocan. Hasta entonces sólo se podía
+>   entrar por VPN, y por eso la cola de revisión llevaba 9 días sin decisiones. El vigía (`fase2/vigia.py`)
+>   avisa por correo si el barrido, la entrega o el panel se detienen, o si nadie revisa.
+>
 > - **E5, entrega en producción desde 2026-10-13** (`fase2/entrega.py`, "match del gestor 2"):
 >   - mismo match que el gestor 1, pero por diccionario sobre `clasificador_f2_resultado`: una unidad recibe
 >     una categoría si su `diccionario_unidad` tiene `pactivo` = nombre de la categoría;

@@ -116,8 +116,9 @@ def _secret() -> str:
 
 # Se agrega DESPUÉS del middleware de protección para envolverlo (Starlette: el
 # último agregado es el más externo).
-app.add_middleware(SessionMiddleware, secret_key=_secret(), max_age=8 * 3600,
-                   same_site="lax", https_only=False, session_cookie="f2_sesion")
+# F2_COOKIE_SEGURA=1 en producción (https://device.pharmatender.cl): la cookie sólo viaja por HTTPS.
+app.add_middleware(SessionMiddleware, secret_key=_secret(), max_age=8 * 3600, same_site="lax",
+                   https_only=os.getenv("F2_COOKIE_SEGURA", "0") == "1", session_cookie="f2_sesion")
 
 
 # --------------------------------------------------------------------------

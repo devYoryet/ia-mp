@@ -4,3 +4,5 @@ __pycache__/
 tests/
 .pytest_cache/
 .env.entrega
+.env.vigia
+estado_vigia/

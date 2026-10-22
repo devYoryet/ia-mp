@@ -30,8 +30,9 @@ Si calzan las dos señales, la fila queda en **verde**. Si calza una sola, va a
 | `reconciliar.py` | qué hacer con cada fila: insertar, actualizar, anular si pasó a farma. Nunca pisa una decisión humana |
 | `barrido.py` | lee las fuentes por bloques de PK y escribe sólo en `clasificador_f2_*` |
 | `servicio.py` | loop: barrido rápido (3 días) cada 10 minutos, profundo (60 días) a diario y cuando cambian las reglas |
-| `panel.py` | panel de revisión en http://10.0.0.70:8810 (red interna / VPN), con el login del equipo. Sólo escribe las columnas de revisión humana |
+| `panel.py` | panel de revisión en **https://device.pharmatender.cl** (sin VPN), con el login del equipo. Sólo escribe las columnas de revisión humana. El puerto 8810 escucha sólo en localhost; lo publica un vhost nginx propio (`nginx-device.conf`), aparte del de iabot y del de phpMyAdmin |
 | `entrega.py` | **match del gestor 2**: copia lo asignado (verde, aprobado y "En farma"), abierto y de los últimos 30 días, a las tablas por cliente (`Licitaciones_diarias_clientes[_agil|_cotizaciones]`, clásico y prime) de toda unidad cuyo diccionario tenga la categoría. Sólo inserta filas nuevas idénticas a las del gestor 1; lo propio vive en `clasificador_f2_entregas`. Container `ia-mp-fase2-entrega`, usuario `ia_f2_entrega` (sin UPDATE) |
+| `vigia.py` | avisa por correo si el barrido o la entrega se detienen, si el panel no responde, si el certificado está por vencer o si nadie revisa hace 2 días. Lo lanza el cron del host cada 10 min (`docker compose --profile vigia run --rm vigia`); repite cada 6 h mientras siga el problema y avisa cuando se resuelve |
 | `auditoria_ia.py` | auditoría con IA de lo que la fase 2 NO rescató: muestra por estrato (casi calzan, ONU de salud, resto), revisión por lote con tope de gasto, estimado de faltantes. Gasta API: la corre una persona |
 | `backtest_fase2.py` | mide sin escribir: volumen por categoría y señal, y precisión de lo revisado |
 | `admin.py` | tareas de una persona con credenciales de administrador: tablas, usuario, semilla, verificación |
@@ -46,8 +47,15 @@ python backtest_fase2.py --precision            # cuando haya revisiones
 # desplegar / actualizar en gestor_oc (sólo toca /opt/ia-mp-fase2 y el container ia-mp-fase2)
 cd /opt/ia-mp-fase2/fase2 && ./desplegar.sh
 
-# apagar (no afecta al clasificador)
+# apagar (no afecta al clasificador). Comentar también la línea del vigía en crontab, o avisará que está caído
 cd /opt/ia-mp-fase2/fase2 && docker compose down
+
+# vigía: cron del host cada 10 min; destinatarios en .env.vigia (F2V_DESTINOS, F2V_DOMINIO, ALERT_EMAIL_*)
+docker compose --profile vigia run --rm vigia python vigia.py --seco     # qué avisaría ahora
+docker compose --profile vigia run --rm vigia python vigia.py --prueba   # correo de prueba
+
+# despublicar el panel (vuelve a quedar sólo en el servidor)
+rm /etc/nginx/sites-enabled/device && nginx -t && systemctl reload nginx
 
 # auditoría con IA de lo NO rescatado (gasta API: tope en US$; registra el costo en clasificador_ia_costos)
 python auditoria_ia.py --dias 30 --tope-usd 10 --excel auditoria.xlsx   # vista: http://10.0.0.70:8810/auditoria
